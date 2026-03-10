@@ -1717,6 +1717,7 @@ internal static class GameStateService
             target_type = card.TargetType.ToString(),
             requires_target = CardRequiresTarget(card),
             costs_x = card.EnergyCost.CostsX,
+            star_costs_x = card.HasStarCostX,
             energy_cost = card.EnergyCost.GetWithModifiers(CostModifiers.All),
             star_cost = Math.Max(0, card.GetStarCostWithModifiers()),
             playable = reason == UnplayableReason.None,
@@ -1924,6 +1925,8 @@ internal static class GameStateService
             upgraded = card?.IsUpgraded ?? false,
             card_type = card?.Type.ToString() ?? string.Empty,
             rarity = card?.Rarity.ToString() ?? string.Empty,
+            costs_x = card?.EnergyCost.CostsX ?? false,
+            star_costs_x = card?.HasStarCostX ?? false,
             energy_cost = card?.EnergyCost.GetWithModifiers(CostModifiers.All) ?? 0,
             star_cost = card != null ? Math.Max(0, card.GetStarCostWithModifiers()) : 0,
             price = entry.IsStocked ? entry.Cost : 0,
@@ -1990,6 +1993,8 @@ internal static class GameStateService
             upgraded = card.IsUpgraded,
             card_type = card.Type.ToString(),
             rarity = card.Rarity.ToString(),
+            costs_x = card.EnergyCost.CostsX,
+            star_costs_x = card.HasStarCostX,
             energy_cost = card.EnergyCost.GetWithModifiers(CostModifiers.All),
             star_cost = Math.Max(0, card.GetStarCostWithModifiers())
         };
@@ -2004,7 +2009,11 @@ internal static class GameStateService
             name = card.Title,
             upgraded = card.IsUpgraded,
             card_type = card.Type.ToString(),
-            rarity = card.Rarity.ToString()
+            rarity = card.Rarity.ToString(),
+            costs_x = card.EnergyCost.CostsX,
+            star_costs_x = card.HasStarCostX,
+            energy_cost = card.EnergyCost.GetWithModifiers(CostModifiers.All),
+            star_cost = Math.Max(0, card.GetStarCostWithModifiers())
         };
     }
 
@@ -2642,6 +2651,10 @@ internal sealed class ShopCardPayload
 
     public string rarity { get; init; } = string.Empty;
 
+    public bool costs_x { get; init; }
+
+    public bool star_costs_x { get; init; }
+
     public int energy_cost { get; init; }
 
     public int star_cost { get; init; }
@@ -2778,6 +2791,8 @@ internal sealed class CombatHandCardPayload
 
     public bool costs_x { get; init; }
 
+    public bool star_costs_x { get; init; }
+
     public int energy_cost { get; init; }
 
     public int star_cost { get; init; }
@@ -2894,6 +2909,10 @@ internal sealed class DeckCardPayload
 
     public string rarity { get; init; } = string.Empty;
 
+    public bool costs_x { get; init; }
+
+    public bool star_costs_x { get; init; }
+
     public int energy_cost { get; init; }
 
     public int star_cost { get; init; }
@@ -2912,6 +2931,14 @@ internal sealed class SelectionCardPayload
     public string card_type { get; init; } = string.Empty;
 
     public string rarity { get; init; } = string.Empty;
+
+    public bool costs_x { get; init; }
+
+    public bool star_costs_x { get; init; }
+
+    public int energy_cost { get; init; }
+
+    public int star_cost { get; init; }
 }
 
 internal sealed class RunRelicPayload

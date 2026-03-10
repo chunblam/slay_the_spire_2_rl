@@ -156,7 +156,8 @@
 | `upgraded` | boolean | 是否已升级 |
 | `target_type` | string | 目标类型枚举（`None`, `AnyEnemy`, `AnyAlly` 等） |
 | `requires_target` | boolean | 是否需要指定目标 |
-| `costs_x` | boolean | 是否为 X 费卡 |
+| `costs_x` | boolean | 是否为能量 X 费卡 |
+| `star_costs_x` | boolean | 是否为星星 X 费卡 |
 | `energy_cost` | number | 能量消耗（含修正） |
 | `star_cost` | number | 星星消耗（含修正） |
 | `playable` | boolean | **当前是否可打出** |
@@ -198,6 +199,8 @@
 | `upgraded` | boolean | 是否已升级 |
 | `card_type` | string | 类型（`Attack`, `Skill`, `Power`, `Status`, `Curse`） |
 | `rarity` | string | 稀有度（`Starter`, `Common`, `Uncommon`, `Rare`） |
+| `costs_x` | boolean | 是否为能量 X 费卡 |
+| `star_costs_x` | boolean | 是否为星星 X 费卡 |
 | `energy_cost` | number | 能量消耗 |
 | `star_cost` | number | 星星消耗 |
 
@@ -323,6 +326,10 @@
 | `upgraded` | boolean | 是否已升级 |
 | `card_type` | string | 卡牌类型 |
 | `rarity` | string | 稀有度 |
+| `costs_x` | boolean | 是否为能量 X 费卡 |
+| `star_costs_x` | boolean | 是否为星星 X 费卡 |
+| `energy_cost` | number | 能量消耗（含修正） |
+| `star_cost` | number | 星星消耗（含修正） |
 
 ### `chest` 子结构
 
@@ -406,6 +413,19 @@
 | `name` | string | 商品名称 |
 | `price` | number | 当前价格 |
 | `available` | boolean | 当前是否仍可购买 |
+
+#### `shop.cards[]` 附加字段
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `card_id` | string | 卡牌内部 ID |
+| `upgraded` | boolean | 是否已升级 |
+| `card_type` | string | 卡牌类型 |
+| `rarity` | string | 稀有度 |
+| `costs_x` | boolean | 是否为能量 X 费卡 |
+| `star_costs_x` | boolean | 是否为星星 X 费卡 |
+| `energy_cost` | number | 能量消耗（含修正） |
+| `star_cost` | number | 星星消耗（含修正） |
 
 #### `shop.card_removal`
 
