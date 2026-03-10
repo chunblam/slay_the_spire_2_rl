@@ -268,6 +268,8 @@ internal static class GameStateService
 
         return FindDescendants<NRewardButton>(rewardScreen)
             .Where(node => GodotObject.IsInstanceValid(node))
+            .OrderBy(node => node.GlobalPosition.Y)
+            .ThenBy(node => node.GlobalPosition.X)
             .ToArray();
     }
 
@@ -291,6 +293,8 @@ internal static class GameStateService
 
         return FindDescendants<NCardHolder>(cardRewardScreen)
             .Where(node => GodotObject.IsInstanceValid(node) && node.CardModel != null)
+            .OrderBy(node => node.GlobalPosition.Y)
+            .ThenBy(node => node.GlobalPosition.X)
             .ToArray();
     }
 
@@ -303,6 +307,8 @@ internal static class GameStateService
 
         return FindDescendants<NCardRewardAlternativeButton>(cardRewardScreen)
             .Where(node => GodotObject.IsInstanceValid(node) && node.IsVisibleInTree())
+            .OrderBy(node => node.GlobalPosition.Y)
+            .ThenBy(node => node.GlobalPosition.X)
             .ToArray();
     }
 
@@ -315,6 +321,8 @@ internal static class GameStateService
 
         return FindDescendants<NGridCardHolder>(deckCardSelectScreen)
             .Where(node => GodotObject.IsInstanceValid(node) && node.CardModel != null)
+            .OrderBy(node => node.GlobalPosition.Y)
+            .ThenBy(node => node.GlobalPosition.X)
             .ToArray();
     }
 

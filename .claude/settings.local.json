@@ -1,5 +1,10 @@
 {
   "enabledPlugins": {
     "superpowers@superpowers-marketplace": true
+  },
+  "permissions": {
+    "allow": [
+      "mcp__fast-context__extract_windsurf_key"
+    ]
   }
 }
