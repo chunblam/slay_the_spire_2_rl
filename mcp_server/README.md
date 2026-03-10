@@ -1,25 +1,25 @@
 # STS2 MCP Server
 
-`mcp_server/` 提供一个基于 `FastMCP` 的本地 MCP Server，把 `STS2AIAgent` Mod 暴露的 HTTP API 包装成 MCP 工具，供大模型直接调用。
+`mcp_server/` 提供一个基于 `FastMCP` 的本地 MCP Server，把 `STS2AIAgent` Mod 暴露的 HTTP API 包装成可直接给大模型调用的工具。
 
----
+它的目标不是“把所有底层按钮都暴露出去”，而是给 agent 一套足够完整、但仍然有状态约束的游玩接口。
 
 ## 当前工具
 
-基础状态工具：
+基础状态：
 
 - `health_check`
 - `get_game_state`
 - `get_available_actions`
 
-战斗工具：
+战斗：
 
 - `play_card`
 - `end_turn`
 - `use_potion`
 - `discard_potion`
 
-主菜单与房间推进：
+房间 / 流程推进：
 
 - `continue_run`
 - `abandon_run`
@@ -28,6 +28,8 @@
 - `close_main_menu_submenu`
 - `choose_timeline_epoch`
 - `confirm_timeline_overlay`
+- `select_character`
+- `embark`
 - `choose_map_node`
 - `proceed`
 - `open_chest`
@@ -40,8 +42,9 @@
 - `buy_relic`
 - `buy_potion`
 - `remove_card_at_shop`
+- `return_to_main_menu`
 
-奖励与选牌：
+奖励 / 选牌：
 
 - `claim_reward`
 - `choose_reward_card`
@@ -49,29 +52,74 @@
 - `collect_rewards_and_proceed`
 - `select_deck_card`
 
-开局与收尾：
+Modal：
 
-- `select_character`
-- `embark`
 - `confirm_modal`
 - `dismiss_modal`
-- `return_to_main_menu`
-- `run_console_command`（调试 / 验证，仅当 `STS2_ENABLE_DEBUG_ACTIONS=1` 时注册）
 
----
+开发期调试：
+
+- `run_console_command`
+  - 仅当 `STS2_ENABLE_DEBUG_ACTIONS=1` 时注册
+  - 默认关闭
+  - 只用于开发和验证，不应成为正式游玩流程的常规依赖
+
+## 降低模型误调用的建议
+
+这个 MCP 已经不算小，所以真正影响稳定性的，不只是“工具有没有”，还包括“模型是不是按正确节奏调用”。
+
+推荐约束：
+
+1. 会话开始先调 `health_check`。
+2. 每次决策前都调 `get_game_state`。
+3. 只调用当前 `available_actions` 里出现的动作。
+4. 每次动作后重新读取状态，不复用旧索引。
+5. 优先用高层动作，不要把可合并流程拆碎。
+
+高层动作优先级：
+
+- 奖励房间优先 `collect_rewards_and_proceed`
+- 休息点优先 `choose_rest_option`
+- 商店先 `open_shop_inventory`，离开内层库存先 `close_shop_inventory`
+- 宝箱必须 `open_chest -> choose_treasure_relic -> proceed`
+- `MODAL` 出现时优先 `confirm_modal` / `dismiss_modal`
+
+## 推荐配套 Skill
+
+如果上层 agent 支持 Codex Skill，推荐同时加载：
+
+- [sts2-mcp-player](/Users/chart/Documents/project/sp/skills/sts2-mcp-player/SKILL.md)
+
+这个 skill 会强制 agent 采用“状态优先、按房间推进、只用可用动作”的工作流，能明显减少误调用和索引漂移。
+
+## 费用字段说明
+
+所有主要卡牌 payload 现在都同时暴露：
+
+- `costs_x`
+  - 是否为能量 X 费卡
+- `star_costs_x`
+  - 是否为星星 X 费卡
+- `energy_cost`
+  - 当前能量消耗，包含战斗中的临时修正
+- `star_cost`
+  - 当前星星消耗，包含战斗中的临时修正
+
+这很重要，因为 STS2 里有两类容易让模型误判的动态情况：
+
+- 能量费在战斗中被临时改写，例如 `Bullet Time`
+- 星星费 / 星星 X 费会随当前星数变化，例如 `Stardust`
 
 ## 环境变量
 
 - `STS2_API_BASE_URL`
-  - 默认值：`http://127.0.0.1:8080`
+  - 默认：`http://127.0.0.1:8080`
 - `STS2_API_TIMEOUT_SECONDS`
-  - 默认值：`10`
+  - 默认：`10`
 - `STS2_ENABLE_DEBUG_ACTIONS`
-  - 默认值：未设置 / `0`
+  - 默认：未设置 / `0`
   - 作用：启用开发期 debug 工具，例如 `run_console_command`
   - 发布建议：保持关闭
-
----
 
 ## 本地启动
 
@@ -83,11 +131,24 @@ uv run sts2-mcp-server
 
 默认通过 `stdio` 运行，适合直接接入 MCP 客户端。
 
----
+## 开发期验证脚本
+
+启动游戏并保持运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:/Users/chart/Documents/project/sp/scripts/start-game-session.ps1" -EnableDebugActions
+```
+
+验证 debug 工具默认关闭 / 显式开启：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:/Users/chart/Documents/project/sp/scripts/test-debug-console-gating.ps1"
+powershell -ExecutionPolicy Bypass -File "C:/Users/chart/Documents/project/sp/scripts/test-debug-console-gating.ps1" -EnableDebugActions
+```
 
 ## 快速自检
 
-只验证 Python 包装层是否可导入：
+只验证 Python 包装层可导入：
 
 ```powershell
 cd "C:/Users/chart/Documents/project/sp/mcp_server"
@@ -101,27 +162,13 @@ cd "C:/Users/chart/Documents/project/sp/mcp_server"
 uv run python -c "from sts2_mcp.client import Sts2Client; import json; print(json.dumps(Sts2Client().get_state(), ensure_ascii=False, indent=2))"
 ```
 
----
-
-## 使用约束
-
-1. 先调用 `health_check`，确认游戏和 Mod 已启动。
-2. 每次决策前优先调用 `get_game_state`。
-3. 调动作时只使用当前 `available_actions` 中暴露的工具。
-4. `MODAL` 出现时，优先处理 `confirm_modal` / `dismiss_modal`，不要继续发普通房间动作。
-5. `REWARD`、`CARD_SELECTION`、`SHOP`、`REST`、`EVENT` 都是多阶段流程，动作后要重新读状态。
-
----
-
-## 发布前最低验证
-
-发布前至少确认以下命令通过：
+## 发布前最低要求
 
 ```powershell
-dotnet build "C:/Users/chart/Documents/project/sp/STS2AIAgent/STS2AIAgent.csproj"
+dotnet build "C:/Users/chart/Documents/project/sp/STS2AIAgent/STS2AIAgent.csproj" -c Release
 python -m py_compile "C:/Users/chart/Documents/project/sp/mcp_server/src/sts2_mcp/client.py" "C:/Users/chart/Documents/project/sp/mcp_server/src/sts2_mcp/server.py"
 cd "C:/Users/chart/Documents/project/sp/mcp_server"
 uv run python -c "from sts2_mcp.server import create_server; create_server(); print('MCP_IMPORT_OK')"
 ```
 
-完整发布验收清单见 [release-readiness.md](/C:/Users/chart/Documents/project/sp/docs/release-readiness.md)。
+完整发布清单见 [release-readiness.md](/Users/chart/Documents/project/sp/docs/release-readiness.md)。

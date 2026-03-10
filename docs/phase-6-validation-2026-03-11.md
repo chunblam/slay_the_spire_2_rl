@@ -2,7 +2,7 @@
 
 - Validation date: `2026-03-11`
 - Validator: Codex
-- Git commits: `69ed5c2`, `26cd9b0`
+- Git commits: `69ed5c2`, `26cd9b0`, `588d939`, `637deaa`
 - Game version: `v0.98.3`
 - Mod build: `Release`
 - MCP mode: local stdio server + local HTTP mod
@@ -14,12 +14,15 @@
 - `python -m py_compile "C:/Users/chart/Documents/project/sp/mcp_server/src/sts2_mcp/client.py" "C:/Users/chart/Documents/project/sp/mcp_server/src/sts2_mcp/server.py"` passed
 - `powershell -ExecutionPolicy Bypass -File "C:/Users/chart/Documents/project/sp/scripts/preflight-release.ps1"` passed
 - `powershell -ExecutionPolicy Bypass -File "C:/Users/chart/Documents/project/sp/scripts/test-mod-load.ps1" -DeepCheck` passed
+- `powershell -ExecutionPolicy Bypass -File "C:/Users/chart/Documents/project/sp/scripts/test-debug-console-gating.ps1"` passed
+- `powershell -ExecutionPolicy Bypass -File "C:/Users/chart/Documents/project/sp/scripts/test-debug-console-gating.ps1" -EnableDebugActions` passed
 
 Key output summary:
 
 ```text
 preflight-release.ps1: OK
 test-mod-load.ps1 -DeepCheck: {"health_ok":true,"state_ok":true,"actions_ok":true}
+test-debug-console-gating.ps1: disabled -> invalid_action, enabled -> completed
 ```
 
 ## Real-Game Validation
@@ -42,6 +45,25 @@ test-mod-load.ps1 -DeepCheck: {"health_ok":true,"state_ok":true,"actions_ok":tru
 - Entered combat, played through combat state transitions, and used `run_console_command "win"` to accelerate validation
 - `use_potion` was validated in real combat earlier in the session
 - `discard_potion` remained available and state updates were consistent across non-combat rooms
+
+### Dynamic combat metadata
+
+- Regent combat was revalidated specifically for stars / star-cost behavior
+- `Falling Star` correctly reported `star_cost=2` and became `playable=false` with `unplayable_reason="not_enough_stars"` after stars were exhausted
+- `Stardust` was used to verify star-X behavior
+- A protocol gap was found and fixed in commit `637deaa`: the state previously exposed `star_cost` but did not distinguish star-X cards from fixed-cost star cards
+- After the patch, `Stardust` now reports `star_costs_x=true` while preserving the current resolved `star_cost`
+- `Bullet Time` was revalidated against live combat state, and the MCP payload reflected in-combat cost changes after the card resolved
+
+### Debug gating
+
+- Debug console tooling was revalidated in commit `588d939`
+- Direct mod HTTP action validation confirmed:
+  - default release behavior: `run_console_command` returns `invalid_action`
+  - development behavior with `STS2_ENABLE_DEBUG_ACTIONS=1`: command succeeds
+- MCP server registration was also checked locally:
+  - without the env var, `run_console_command` is not registered
+  - with the env var, `run_console_command` is registered
 
 ### Reward flow
 
@@ -115,12 +137,14 @@ Result:
 
 Reason:
 
-- The major gameplay chain is now largely covered and the biggest blockers found during real testing were fixed in commits `69ed5c2` and `26cd9b0`
+- The major gameplay chain is now largely covered and the biggest blockers found during real testing were fixed in commits `69ed5c2`, `26cd9b0`, `588d939`, and `637deaa`
 - Static checks pass and most room chains now pass in live runs
+- Debug tooling is now properly gated for development-only use
+- Dynamic energy / star metadata is now more complete for agent-side decision making
 - A final clean rerun on the latest commit is still needed for the remaining start-of-run transform/enchant selection branches
 
 Recommended next step:
 
-1. Re-run one fresh-run validation on commit `26cd9b0`
+1. Re-run one fresh-run validation on the latest commit set
 2. Force a transform or enchant deck selection branch and confirm `screen="CARD_SELECTION"` plus `selection.kind`
 3. If those branches also pass, re-evaluate whether the project can move from gray release candidate to formal release
