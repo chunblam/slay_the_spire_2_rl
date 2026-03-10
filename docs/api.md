@@ -1210,6 +1210,10 @@
 
 | 功能 | 对应字段 / 动作 | 当前状态 |
 | --- | --- | --- |
+| 主菜单续局 / 放弃 | `continue_run` / `abandon_run` | 已实现，待实机验证 |
+| 主菜单开局入口 | `open_character_select` | 已实现，待实机验证 |
+| 主菜单时间线入口 | `open_timeline` / `close_main_menu_submenu` | 已实现，待实机验证 |
+| 时间线交互 | `timeline` / `choose_timeline_epoch` / `confirm_timeline_overlay` | 已实现，待实机验证 |
 | 角色选择 | `character_select` / `select_character` / `embark` | 已实现，待实机验证 |
 | 药水系统 | `run.potions[*].can_use` / `use_potion` / `discard_potion` | 已实现，待实机验证 |
 | 阻塞弹窗 | `modal` / `confirm_modal` / `dismiss_modal` | 已实现，待实机验证 |

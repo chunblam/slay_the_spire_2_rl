@@ -16,10 +16,13 @@ using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
 using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
+using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 using MegaCrit.Sts2.Core.Nodes.Screens.Shops;
+using MegaCrit.Sts2.Core.Nodes.Screens.Timeline;
+using MegaCrit.Sts2.Core.Nodes.Screens.Timeline.UnlockScreens;
 using MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Runs;
@@ -29,6 +32,7 @@ using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Rewards;
+using MegaCrit.Sts2.Core.Timeline;
 using STS2AIAgent.Server;
 
 namespace STS2AIAgent.Game;
@@ -43,6 +47,13 @@ internal static class GameActionService
         {
             "end_turn" => ExecuteEndTurnAsync(),
             "play_card" => ExecutePlayCardAsync(request),
+            "continue_run" => ExecuteContinueRunAsync(),
+            "abandon_run" => ExecuteAbandonRunAsync(),
+            "open_character_select" => ExecuteOpenCharacterSelectAsync(),
+            "open_timeline" => ExecuteOpenTimelineAsync(),
+            "close_main_menu_submenu" => ExecuteCloseMainMenuSubmenuAsync(),
+            "choose_timeline_epoch" => ExecuteChooseTimelineEpochAsync(request),
+            "confirm_timeline_overlay" => ExecuteConfirmTimelineOverlayAsync(),
             "choose_map_node" => ExecuteChooseMapNodeAsync(request),
             "collect_rewards_and_proceed" => ExecuteCollectRewardsAndProceedAsync(),
             "claim_reward" => ExecuteClaimRewardAsync(request),
@@ -233,6 +244,261 @@ internal static class GameActionService
         return new ActionResponsePayload
         {
             action = "play_card",
+            status = stable ? "completed" : "pending",
+            stable = stable,
+            message = stable ? "Action completed." : "Action queued but state is still transitioning.",
+            state = GameStateService.BuildStatePayload()
+        };
+    }
+
+    private static async Task<ActionResponsePayload> ExecuteOpenCharacterSelectAsync()
+    {
+        var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        var screen = GameStateService.ResolveScreen(currentScreen);
+
+        if (currentScreen is not NMainMenu mainMenu || !GameStateService.CanOpenCharacterSelect(currentScreen))
+        {
+            throw new ApiException(409, "invalid_action", "Action is not available in the current state.", new
+            {
+                action = "open_character_select",
+                screen
+            });
+        }
+
+        var characterSelectScreen = mainMenu.SubmenuStack.GetSubmenuType<NCharacterSelectScreen>();
+        characterSelectScreen.InitializeSingleplayer();
+        mainMenu.SubmenuStack.Push(characterSelectScreen);
+        var stable = await WaitForCharacterSelectOpenAsync(mainMenu, TimeSpan.FromSeconds(10));
+
+        return new ActionResponsePayload
+        {
+            action = "open_character_select",
+            status = stable ? "completed" : "pending",
+            stable = stable,
+            message = stable ? "Action completed." : "Action queued but state is still transitioning.",
+            state = GameStateService.BuildStatePayload()
+        };
+    }
+
+    private static async Task<ActionResponsePayload> ExecuteOpenTimelineAsync()
+    {
+        var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        var screen = GameStateService.ResolveScreen(currentScreen);
+
+        if (currentScreen is not NMainMenu mainMenu || !GameStateService.CanOpenTimeline(currentScreen))
+        {
+            throw new ApiException(409, "invalid_action", "Action is not available in the current state.", new
+            {
+                action = "open_timeline",
+                screen
+            });
+        }
+
+        mainMenu.SubmenuStack.PushSubmenuType<NTimelineScreen>();
+        var stable = await WaitForMainMenuSubmenuOpenAsync<NTimelineScreen>(mainMenu, TimeSpan.FromSeconds(10));
+
+        return new ActionResponsePayload
+        {
+            action = "open_timeline",
+            status = stable ? "completed" : "pending",
+            stable = stable,
+            message = stable ? "Action completed." : "Action queued but state is still transitioning.",
+            state = GameStateService.BuildStatePayload()
+        };
+    }
+
+    private static async Task<ActionResponsePayload> ExecuteCloseMainMenuSubmenuAsync()
+    {
+        var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        var screen = GameStateService.ResolveScreen(currentScreen);
+
+        if (currentScreen is not NSubmenu submenu || !GameStateService.CanCloseMainMenuSubmenu(currentScreen))
+        {
+            throw new ApiException(409, "invalid_action", "Action is not available in the current state.", new
+            {
+                action = "close_main_menu_submenu",
+                screen
+            });
+        }
+
+        var submenuStack = GameStateService.GetMainMenuSubmenuStack(submenu)
+            ?? throw new ApiException(503, "state_unavailable", "Main menu submenu stack is unavailable.", new
+            {
+                action = "close_main_menu_submenu",
+                screen
+            }, retryable: true);
+
+        submenuStack.Pop();
+        var stable = await WaitForMainMenuSubmenuCloseAsync(submenuStack, submenu, TimeSpan.FromSeconds(10));
+
+        return new ActionResponsePayload
+        {
+            action = "close_main_menu_submenu",
+            status = stable ? "completed" : "pending",
+            stable = stable,
+            message = stable ? "Action completed." : "Action queued but state is still transitioning.",
+            state = GameStateService.BuildStatePayload()
+        };
+    }
+
+    private static async Task<ActionResponsePayload> ExecuteChooseTimelineEpochAsync(ActionRequest request)
+    {
+        var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        var screen = GameStateService.ResolveScreen(currentScreen);
+
+        if (!GameStateService.CanChooseTimelineEpoch(currentScreen))
+        {
+            throw new ApiException(409, "invalid_action", "Action is not available in the current state.", new
+            {
+                action = "choose_timeline_epoch",
+                screen
+            });
+        }
+
+        if (request.option_index == null)
+        {
+            throw new ApiException(400, "invalid_request", "option_index is required.", new
+            {
+                action = "choose_timeline_epoch"
+            });
+        }
+
+        var slot = ResolveTimelineSlot(currentScreen, request.option_index.Value);
+        var previousState = slot.State;
+
+        slot.ForceClick();
+        var stable = await WaitForTimelineEpochTransitionAsync(slot, previousState, TimeSpan.FromSeconds(15));
+
+        return new ActionResponsePayload
+        {
+            action = "choose_timeline_epoch",
+            status = stable ? "completed" : "pending",
+            stable = stable,
+            message = stable ? "Action completed." : "Action queued but state is still transitioning.",
+            state = GameStateService.BuildStatePayload()
+        };
+    }
+
+    private static async Task<ActionResponsePayload> ExecuteConfirmTimelineOverlayAsync()
+    {
+        var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        var screen = GameStateService.ResolveScreen(currentScreen);
+
+        if (!GameStateService.CanConfirmTimelineOverlay(currentScreen))
+        {
+            throw new ApiException(409, "invalid_action", "Action is not available in the current state.", new
+            {
+                action = "confirm_timeline_overlay",
+                screen
+            });
+        }
+
+        var unlockScreen = GameStateService.GetTimelineUnlockScreen(currentScreen);
+        if (unlockScreen != null)
+        {
+            var confirmButton = GameStateService.GetTimelineUnlockConfirmButton(currentScreen)
+                ?? throw new ApiException(503, "state_unavailable", "Timeline unlock confirm button is unavailable.", new
+                {
+                    action = "confirm_timeline_overlay",
+                    screen
+                }, retryable: true);
+
+            confirmButton.ForceClick();
+            var unlockType = unlockScreen.GetType();
+            var stable = await WaitForTimelineUnlockTransitionAsync(unlockType, TimeSpan.FromSeconds(10));
+
+            return new ActionResponsePayload
+            {
+                action = "confirm_timeline_overlay",
+                status = stable ? "completed" : "pending",
+                stable = stable,
+                message = stable ? "Action completed." : "Action queued but state is still transitioning.",
+                state = GameStateService.BuildStatePayload()
+            };
+        }
+
+        var closeButton = GameStateService.GetTimelineInspectCloseButton(currentScreen)
+            ?? throw new ApiException(503, "state_unavailable", "Timeline inspect close button is unavailable.", new
+            {
+                action = "confirm_timeline_overlay",
+                screen
+            }, retryable: true);
+
+        closeButton.ForceClick();
+        var inspectScreen = GameStateService.GetTimelineInspectScreen(currentScreen);
+        var stableInspect = await WaitForTimelineInspectCloseAsync(inspectScreen, TimeSpan.FromSeconds(10));
+
+        return new ActionResponsePayload
+        {
+            action = "confirm_timeline_overlay",
+            status = stableInspect ? "completed" : "pending",
+            stable = stableInspect,
+            message = stableInspect ? "Action completed." : "Action queued but state is still transitioning.",
+            state = GameStateService.BuildStatePayload()
+        };
+    }
+
+    private static async Task<ActionResponsePayload> ExecuteContinueRunAsync()
+    {
+        var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        var screen = GameStateService.ResolveScreen(currentScreen);
+
+        if (currentScreen is not NMainMenu mainMenu || !GameStateService.CanContinueRun(currentScreen))
+        {
+            throw new ApiException(409, "invalid_action", "Action is not available in the current state.", new
+            {
+                action = "continue_run",
+                screen
+            });
+        }
+
+        var continueButton = GameStateService.GetMainMenuContinueButton(mainMenu)
+            ?? throw new ApiException(503, "state_unavailable", "Continue button is unavailable.", new
+            {
+                action = "continue_run",
+                screen
+            }, retryable: true);
+
+        continueButton.ForceClick();
+        var stable = await WaitForMainMenuExitAsync(mainMenu, TimeSpan.FromSeconds(15));
+
+        return new ActionResponsePayload
+        {
+            action = "continue_run",
+            status = stable ? "completed" : "pending",
+            stable = stable,
+            message = stable ? "Action completed." : "Action queued but state is still transitioning.",
+            state = GameStateService.BuildStatePayload()
+        };
+    }
+
+    private static async Task<ActionResponsePayload> ExecuteAbandonRunAsync()
+    {
+        var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        var screen = GameStateService.ResolveScreen(currentScreen);
+
+        if (currentScreen is not NMainMenu mainMenu || !GameStateService.CanAbandonRun(currentScreen))
+        {
+            throw new ApiException(409, "invalid_action", "Action is not available in the current state.", new
+            {
+                action = "abandon_run",
+                screen
+            });
+        }
+
+        var abandonButton = GameStateService.GetMainMenuAbandonRunButton(mainMenu)
+            ?? throw new ApiException(503, "state_unavailable", "Abandon run button is unavailable.", new
+            {
+                action = "abandon_run",
+                screen
+            }, retryable: true);
+
+        abandonButton.ForceClick();
+        var stable = await WaitForMainMenuModalAsync(TimeSpan.FromSeconds(10));
+
+        return new ActionResponsePayload
+        {
+            action = "abandon_run",
             status = stable ? "completed" : "pending",
             stable = stable,
             message = stable ? "Action completed." : "Action queued but state is still transitioning.",
@@ -2083,6 +2349,213 @@ internal static class GameActionService
         }
 
         return enemy;
+    }
+
+    private static NEpochSlot ResolveTimelineSlot(IScreenContext? currentScreen, int optionIndex)
+    {
+        var slots = GameStateService.GetTimelineSlots(currentScreen)
+            .Where(slot => slot.State is EpochSlotState.Obtained or EpochSlotState.Complete)
+            .ToArray();
+
+        if (optionIndex < 0 || optionIndex >= slots.Length)
+        {
+            throw new ApiException(409, "invalid_target", "option_index is out of range.", new
+            {
+                action = "choose_timeline_epoch",
+                option_index = optionIndex
+            });
+        }
+
+        return slots[optionIndex];
+    }
+
+    private static async Task<bool> WaitForCharacterSelectOpenAsync(NMainMenu screen, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            await WaitForNextFrameAsync();
+
+            var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+            if (currentScreen is NCharacterSelectScreen)
+            {
+                return true;
+            }
+
+            if (!GodotObject.IsInstanceValid(screen))
+            {
+                return true;
+            }
+        }
+
+        var finalScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        return finalScreen is NCharacterSelectScreen;
+    }
+
+    private static async Task<bool> WaitForTimelineEpochTransitionAsync(
+        NEpochSlot slot,
+        EpochSlotState previousState,
+        TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            await WaitForNextFrameAsync();
+
+            var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+            if (currentScreen is not NTimelineScreen)
+            {
+                return true;
+            }
+
+            if (!GodotObject.IsInstanceValid(slot) || slot.State != previousState)
+            {
+                return true;
+            }
+
+            if (GameStateService.GetTimelineInspectScreen(currentScreen) != null ||
+                GameStateService.GetTimelineUnlockScreen(currentScreen) != null)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static async Task<bool> WaitForMainMenuSubmenuOpenAsync<TSubmenu>(NMainMenu screen, TimeSpan timeout)
+        where TSubmenu : NSubmenu
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            await WaitForNextFrameAsync();
+
+            var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+            if (currentScreen is TSubmenu)
+            {
+                return true;
+            }
+
+            if (!GodotObject.IsInstanceValid(screen))
+            {
+                return true;
+            }
+        }
+
+        return ActiveScreenContext.Instance.GetCurrentScreen() is TSubmenu;
+    }
+
+    private static async Task<bool> WaitForMainMenuExitAsync(NMainMenu screen, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            await WaitForNextFrameAsync();
+
+            if (GameStateService.GetOpenModal() != null)
+            {
+                return true;
+            }
+
+            var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+            if (!ReferenceEquals(currentScreen, screen))
+            {
+                return true;
+            }
+        }
+
+        return !ReferenceEquals(ActiveScreenContext.Instance.GetCurrentScreen(), screen);
+    }
+
+    private static async Task<bool> WaitForMainMenuModalAsync(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            await WaitForNextFrameAsync();
+
+            if (GameStateService.GetOpenModal() != null)
+            {
+                return true;
+            }
+        }
+
+        return GameStateService.GetOpenModal() != null;
+    }
+
+    private static async Task<bool> WaitForTimelineInspectCloseAsync(
+        NEpochInspectScreen? inspectScreen,
+        TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            await WaitForNextFrameAsync();
+
+            var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+            if (currentScreen is not NTimelineScreen)
+            {
+                return true;
+            }
+
+            var currentInspect = GameStateService.GetTimelineInspectScreen(currentScreen);
+            if (currentInspect == null || (inspectScreen != null && !ReferenceEquals(currentInspect, inspectScreen)))
+            {
+                return true;
+            }
+
+            if (GameStateService.GetTimelineUnlockScreen(currentScreen) != null)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static async Task<bool> WaitForTimelineUnlockTransitionAsync(Type unlockScreenType, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            await WaitForNextFrameAsync();
+
+            var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+            if (currentScreen is not NTimelineScreen)
+            {
+                return true;
+            }
+
+            var unlockScreen = GameStateService.GetTimelineUnlockScreen(currentScreen);
+            if (unlockScreen == null || unlockScreen.GetType() != unlockScreenType)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static async Task<bool> WaitForMainMenuSubmenuCloseAsync(
+        NMainMenuSubmenuStack submenuStack,
+        NSubmenu submenu,
+        TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            await WaitForNextFrameAsync();
+
+            var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+            if (!ReferenceEquals(currentScreen, submenu) || !submenuStack.SubmenusOpen)
+            {
+                return true;
+            }
+        }
+
+        var finalScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        return !ReferenceEquals(finalScreen, submenu) || !submenuStack.SubmenusOpen;
     }
 
     private static async Task<bool> WaitForCharacterSelectionTransitionAsync(

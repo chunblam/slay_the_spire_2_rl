@@ -455,6 +455,91 @@ def create_server(client: Sts2Client | None = None) -> FastMCP:
         return sts2.remove_card_at_shop()
 
     @mcp.tool
+    def continue_run() -> dict[str, Any]:
+        """Continue the current run from the main menu.
+
+        Preconditions:
+            - screen is MAIN_MENU.
+            - available_actions includes "continue_run".
+        """
+        return sts2.continue_run()
+
+    @mcp.tool
+    def abandon_run() -> dict[str, Any]:
+        """Open the abandon-run confirmation from the main menu.
+
+        Preconditions:
+            - screen is MAIN_MENU.
+            - available_actions includes "abandon_run".
+
+        Follow up with confirm_modal or dismiss_modal.
+        """
+        return sts2.abandon_run()
+
+    @mcp.tool
+    def open_character_select() -> dict[str, Any]:
+        """Open the character select screen from the main menu.
+
+        Preconditions:
+            - screen is MAIN_MENU.
+            - available_actions includes "open_character_select".
+
+        This opens the singleplayer character selection flow directly.
+        """
+        return sts2.open_character_select()
+
+    @mcp.tool
+    def open_timeline() -> dict[str, Any]:
+        """Open the timeline screen from the main menu.
+
+        Preconditions:
+            - screen is MAIN_MENU.
+            - available_actions includes "open_timeline".
+
+        Use this when timeline progression temporarily disables
+        singleplayer on the main menu.
+        """
+        return sts2.open_timeline()
+
+    @mcp.tool
+    def close_main_menu_submenu() -> dict[str, Any]:
+        """Close the currently open main-menu submenu and return to the menu.
+
+        Preconditions:
+            - screen is MAIN_MENU.
+            - available_actions includes "close_main_menu_submenu".
+            - A main-menu submenu such as timeline is currently open.
+        """
+        return sts2.close_main_menu_submenu()
+
+    @mcp.tool
+    def choose_timeline_epoch(option_index: int) -> dict[str, Any]:
+        """Choose a visible epoch on the timeline screen.
+
+        Args:
+            option_index: zero-based index into timeline.slots[] filtered to
+                          actionable entries.
+
+        Preconditions:
+            - screen is MAIN_MENU with timeline submenu open.
+            - available_actions includes "choose_timeline_epoch".
+            - timeline.slots contains at least one actionable epoch.
+        """
+        return sts2.choose_timeline_epoch(option_index=option_index)
+
+    @mcp.tool
+    def confirm_timeline_overlay() -> dict[str, Any]:
+        """Confirm the current timeline inspect or unlock overlay.
+
+        Preconditions:
+            - screen is MAIN_MENU with timeline submenu open.
+            - available_actions includes "confirm_timeline_overlay".
+
+        Use this to close an epoch inspect panel or advance an unlock screen.
+        """
+        return sts2.confirm_timeline_overlay()
+
+    @mcp.tool
     def select_character(option_index: int) -> dict[str, Any]:
         """Pick a character on the character select screen.
 

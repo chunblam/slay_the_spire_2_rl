@@ -19,8 +19,15 @@
 - `use_potion`
 - `discard_potion`
 
-地图与房间推进：
+主菜单与房间推进：
 
+- `continue_run`
+- `abandon_run`
+- `open_character_select`
+- `open_timeline`
+- `close_main_menu_submenu`
+- `choose_timeline_epoch`
+- `confirm_timeline_overlay`
 - `choose_map_node`
 - `proceed`
 - `open_chest`

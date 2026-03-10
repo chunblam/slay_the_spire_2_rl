@@ -80,6 +80,70 @@ class Sts2Client:
             },
         )
 
+    def continue_run(self) -> dict[str, Any]:
+        return self.execute_action(
+            "continue_run",
+            client_context={
+                "source": "mcp",
+                "tool_name": "continue_run",
+            },
+        )
+
+    def abandon_run(self) -> dict[str, Any]:
+        return self.execute_action(
+            "abandon_run",
+            client_context={
+                "source": "mcp",
+                "tool_name": "abandon_run",
+            },
+        )
+
+    def open_character_select(self) -> dict[str, Any]:
+        return self.execute_action(
+            "open_character_select",
+            client_context={
+                "source": "mcp",
+                "tool_name": "open_character_select",
+            },
+        )
+
+    def open_timeline(self) -> dict[str, Any]:
+        return self.execute_action(
+            "open_timeline",
+            client_context={
+                "source": "mcp",
+                "tool_name": "open_timeline",
+            },
+        )
+
+    def close_main_menu_submenu(self) -> dict[str, Any]:
+        return self.execute_action(
+            "close_main_menu_submenu",
+            client_context={
+                "source": "mcp",
+                "tool_name": "close_main_menu_submenu",
+            },
+        )
+
+    def choose_timeline_epoch(self, option_index: int) -> dict[str, Any]:
+        return self.execute_action(
+            "choose_timeline_epoch",
+            option_index=option_index,
+            client_context={
+                "source": "mcp",
+                "tool_name": "choose_timeline_epoch",
+            },
+        )
+
+    def confirm_timeline_overlay(self) -> dict[str, Any]:
+        return self.execute_action(
+            "confirm_timeline_overlay",
+            client_context={
+                "source": "mcp",
+                "tool_name": "confirm_timeline_overlay",
+            },
+        )
+
     def choose_map_node(self, option_index: int) -> dict[str, Any]:
         return self.execute_action(
             "choose_map_node",

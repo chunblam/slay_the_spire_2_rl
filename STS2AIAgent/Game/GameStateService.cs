@@ -11,6 +11,7 @@ using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Relics;
+using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
@@ -24,10 +25,13 @@ using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
 using MegaCrit.Sts2.Core.Nodes.Screens.Shops;
+using MegaCrit.Sts2.Core.Nodes.Screens.Timeline;
+using MegaCrit.Sts2.Core.Nodes.Screens.Timeline.UnlockScreens;
 using MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Timeline;
 using MegaCrit.Sts2.addons.mega_text;
 
 namespace STS2AIAgent.Game;
@@ -57,6 +61,7 @@ internal static class GameStateService
             map = BuildMapPayload(currentScreen, runState),
             selection = BuildSelectionPayload(currentScreen),
             character_select = BuildCharacterSelectPayload(currentScreen),
+            timeline = BuildTimelinePayload(currentScreen),
             chest = BuildChestPayload(currentScreen),
             @event = BuildEventPayload(currentScreen),
             shop = BuildShopPayload(currentScreen),
@@ -120,6 +125,76 @@ internal static class GameStateService
                 name = "play_card",
                 requires_target = false,
                 requires_index = true
+            });
+        }
+
+        if (CanContinueRun(currentScreen))
+        {
+            descriptors.Add(new ActionDescriptor
+            {
+                name = "continue_run",
+                requires_target = false,
+                requires_index = false
+            });
+        }
+
+        if (CanAbandonRun(currentScreen))
+        {
+            descriptors.Add(new ActionDescriptor
+            {
+                name = "abandon_run",
+                requires_target = false,
+                requires_index = false
+            });
+        }
+
+        if (CanOpenCharacterSelect(currentScreen))
+        {
+            descriptors.Add(new ActionDescriptor
+            {
+                name = "open_character_select",
+                requires_target = false,
+                requires_index = false
+            });
+        }
+
+        if (CanOpenTimeline(currentScreen))
+        {
+            descriptors.Add(new ActionDescriptor
+            {
+                name = "open_timeline",
+                requires_target = false,
+                requires_index = false
+            });
+        }
+
+        if (CanCloseMainMenuSubmenu(currentScreen))
+        {
+            descriptors.Add(new ActionDescriptor
+            {
+                name = "close_main_menu_submenu",
+                requires_target = false,
+                requires_index = false
+            });
+        }
+
+        if (CanChooseTimelineEpoch(currentScreen))
+        {
+            descriptors.Add(new ActionDescriptor
+            {
+                name = "choose_timeline_epoch",
+                requires_target = false,
+                requires_index = true
+            });
+        }
+
+        if (CanConfirmTimelineOverlay(currentScreen))
+        {
+            descriptors.Add(new ActionDescriptor
+            {
+                name = "confirm_timeline_overlay",
+                requires_target = false,
+                requires_index = false
             });
         }
 
@@ -357,25 +432,13 @@ internal static class GameStateService
             return "MODAL";
         }
 
-        return currentScreen switch
+        var screen = ResolveNonModalScreen(currentScreen);
+        if (screen == "UNKNOWN" && currentScreen != null)
         {
-            NGameOverScreen => "GAME_OVER",
-            NCardRewardSelectionScreen => "REWARD",
-            NDeckCardSelectScreen or NDeckUpgradeSelectScreen => "CARD_SELECTION",
-            NRewardsScreen => "REWARD",
-            NTreasureRoom or NTreasureRoomRelicCollection => "CHEST",
-            NRestSiteRoom => "REST",
-            NMerchantRoom or NMerchantInventory => "SHOP",
-            NEventRoom => "EVENT",
-            NCombatRoom => "COMBAT",
-            NMapScreen or NMapRoom => "MAP",
-            NCharacterSelectScreen => "CHARACTER_SELECT",
-            NPatchNotesScreen => "MAIN_MENU",
-            NSubmenu => "MAIN_MENU",
-            NLogoAnimation => "MAIN_MENU",
-            NMainMenu => "MAIN_MENU",
-            _ => "UNKNOWN"
-        };
+            Log.Warn($"[STS2AIAgent] Unhandled screen type: {currentScreen.GetType().FullName}");
+        }
+
+        return screen;
     }
 
     public static bool CanEndTurn(IScreenContext? currentScreen, CombatState? combatState)
@@ -559,10 +622,102 @@ internal static class GameStateService
             .Any(button => !button.IsLocked && button.IsEnabled && button.IsVisibleInTree());
     }
 
+    public static bool CanContinueRun(IScreenContext? currentScreen)
+    {
+        if (currentScreen is not NMainMenu mainMenu || !mainMenu.IsVisibleInTree())
+        {
+            return false;
+        }
+
+        if (mainMenu.SubmenuStack?.SubmenusOpen == true)
+        {
+            return false;
+        }
+
+        var continueButton = GetMainMenuContinueButton(mainMenu);
+        return continueButton != null && continueButton.IsVisibleInTree() && continueButton.IsEnabled;
+    }
+
+    public static bool CanAbandonRun(IScreenContext? currentScreen)
+    {
+        if (currentScreen is not NMainMenu mainMenu || !mainMenu.IsVisibleInTree())
+        {
+            return false;
+        }
+
+        if (mainMenu.SubmenuStack?.SubmenusOpen == true)
+        {
+            return false;
+        }
+
+        var abandonButton = GetMainMenuAbandonRunButton(mainMenu);
+        return abandonButton != null && abandonButton.IsVisibleInTree() && abandonButton.IsEnabled;
+    }
+
+    public static bool CanOpenCharacterSelect(IScreenContext? currentScreen)
+    {
+        if (currentScreen is not NMainMenu mainMenu || !mainMenu.IsVisibleInTree())
+        {
+            return false;
+        }
+
+        if (mainMenu.SubmenuStack?.SubmenusOpen == true)
+        {
+            return false;
+        }
+
+        var singleplayerButton = GetMainMenuSingleplayerButton(mainMenu);
+        return singleplayerButton != null && singleplayerButton.IsVisibleInTree() && singleplayerButton.IsEnabled;
+    }
+
+    public static bool CanOpenTimeline(IScreenContext? currentScreen)
+    {
+        if (currentScreen is not NMainMenu mainMenu || !mainMenu.IsVisibleInTree())
+        {
+            return false;
+        }
+
+        if (mainMenu.SubmenuStack?.SubmenusOpen == true)
+        {
+            return false;
+        }
+
+        var timelineButton = GetMainMenuTimelineButton(mainMenu);
+        return timelineButton != null && timelineButton.IsVisibleInTree() && timelineButton.IsEnabled;
+    }
+
+    public static bool CanCloseMainMenuSubmenu(IScreenContext? currentScreen)
+    {
+        if (currentScreen is not NSubmenu submenu || !submenu.IsVisibleInTree())
+        {
+            return false;
+        }
+
+        var submenuStack = GetMainMenuSubmenuStack(submenu);
+        return submenuStack != null && submenuStack.SubmenusOpen;
+    }
+
     public static bool CanEmbark(IScreenContext? currentScreen)
     {
         var embarkButton = GetCharacterEmbarkButton(currentScreen);
         return embarkButton != null && embarkButton.IsEnabled && embarkButton.IsVisibleInTree();
+    }
+
+    public static bool CanChooseTimelineEpoch(IScreenContext? currentScreen)
+    {
+        return GetTimelineSlots(currentScreen).Any(slot => slot.State is EpochSlotState.Obtained or EpochSlotState.Complete);
+    }
+
+    public static bool CanConfirmTimelineOverlay(IScreenContext? currentScreen)
+    {
+        var unlockConfirmButton = GetTimelineUnlockConfirmButton(currentScreen);
+        if (unlockConfirmButton != null && unlockConfirmButton.IsVisibleInTree() && unlockConfirmButton.IsEnabled)
+        {
+            return true;
+        }
+
+        var inspectCloseButton = GetTimelineInspectCloseButton(currentScreen);
+        return inspectCloseButton != null && inspectCloseButton.IsVisibleInTree() && inspectCloseButton.IsEnabled;
     }
 
     public static bool CanUsePotion(IScreenContext? currentScreen, CombatState? combatState, RunState? runState)
@@ -713,6 +868,31 @@ internal static class GameStateService
         }
 
         return cardSelectScreen.GetNodeOrNull<MegaRichTextLabel>("%BottomLabel")?.Text;
+    }
+
+    private static string SafeReadString(Func<string?> getter, string fallback = "")
+    {
+        try
+        {
+            var value = getter();
+            return value == null ? fallback : value;
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    private static bool SafeReadBool(Func<bool> getter, bool fallback = false)
+    {
+        try
+        {
+            return getter();
+        }
+        catch
+        {
+            return fallback;
+        }
     }
 
     public static NProceedButton? GetProceedButton(IScreenContext? currentScreen)
@@ -867,6 +1047,41 @@ internal static class GameStateService
         if (CanPlayAnyCard(currentScreen, combatState))
         {
             names.Add("play_card");
+        }
+
+        if (CanContinueRun(currentScreen))
+        {
+            names.Add("continue_run");
+        }
+
+        if (CanAbandonRun(currentScreen))
+        {
+            names.Add("abandon_run");
+        }
+
+        if (CanOpenCharacterSelect(currentScreen))
+        {
+            names.Add("open_character_select");
+        }
+
+        if (CanOpenTimeline(currentScreen))
+        {
+            names.Add("open_timeline");
+        }
+
+        if (CanCloseMainMenuSubmenu(currentScreen))
+        {
+            names.Add("close_main_menu_submenu");
+        }
+
+        if (CanChooseTimelineEpoch(currentScreen))
+        {
+            names.Add("choose_timeline_epoch");
+        }
+
+        if (CanConfirmTimelineOverlay(currentScreen))
+        {
+            names.Add("confirm_timeline_overlay");
         }
 
         if (CanChooseMapNode(currentScreen, runState))
@@ -1197,26 +1412,27 @@ internal static class GameStateService
                     options.Add(new EventOptionPayload
                     {
                         index = i,
-                        text_key = opt.TextKey ?? "",
-                        title = opt.Title?.GetFormattedText() ?? "",
-                        description = opt.Description?.GetFormattedText() ?? "",
-                        is_locked = opt.IsLocked,
-                        is_proceed = opt.IsProceed
+                        text_key = SafeReadString(() => opt.TextKey),
+                        title = SafeReadString(() => opt.Title?.GetFormattedText()),
+                        description = SafeReadString(() => opt.Description?.GetFormattedText()),
+                        is_locked = SafeReadBool(() => opt.IsLocked),
+                        is_proceed = SafeReadBool(() => opt.IsProceed)
                     });
                 }
             }
 
             return new EventPayload
             {
-                event_id = eventModel.Id?.Entry ?? "unknown",
-                title = eventModel.Title?.GetFormattedText() ?? "",
-                description = eventModel.Description?.GetFormattedText() ?? "",
-                is_finished = eventModel.IsFinished,
+                event_id = SafeReadString(() => eventModel.Id?.Entry, "unknown"),
+                title = SafeReadString(() => eventModel.Title?.GetFormattedText()),
+                description = SafeReadString(() => eventModel.Description?.GetFormattedText()),
+                is_finished = SafeReadBool(() => eventModel.IsFinished),
                 options = options.ToArray()
             };
         }
-        catch
+        catch (Exception ex)
         {
+            Log.Warn($"[STS2AIAgent] Failed to build event payload on screen {currentScreen.GetType().FullName}: {ex}");
             return null;
         }
     }
@@ -1297,6 +1513,36 @@ internal static class GameStateService
             relics = inventory.RelicEntries.Select((entry, index) => BuildShopRelicPayload(entry, index)).ToArray(),
             potions = inventory.PotionEntries.Select((entry, index) => BuildShopPotionPayload(entry, index)).ToArray(),
             card_removal = BuildShopCardRemovalPayload(inventory.CardRemovalEntry)
+        };
+    }
+
+    private static TimelinePayload? BuildTimelinePayload(IScreenContext? currentScreen)
+    {
+        var timelineScreen = GetTimelineScreen(currentScreen);
+        if (timelineScreen == null)
+        {
+            return null;
+        }
+
+        var slots = GetTimelineSlots(currentScreen)
+            .Select((slot, index) => new TimelineSlotPayload
+            {
+                index = index,
+                epoch_id = slot.model.Id,
+                title = slot.model.Title.GetFormattedText() ?? slot.model.Id,
+                state = slot.State.ToString().ToLowerInvariant(),
+                is_actionable = slot.State is EpochSlotState.Obtained or EpochSlotState.Complete
+            })
+            .ToArray();
+
+        return new TimelinePayload
+        {
+            back_enabled = GetTimelineBackButton(currentScreen)?.IsEnabled == true,
+            inspect_open = GetTimelineInspectScreen(currentScreen)?.Visible == true,
+            unlock_screen_open = GetTimelineUnlockScreen(currentScreen) != null,
+            can_choose_epoch = CanChooseTimelineEpoch(currentScreen),
+            can_confirm_overlay = CanConfirmTimelineOverlay(currentScreen),
+            slots = slots
         };
     }
 
@@ -1880,6 +2126,101 @@ internal static class GameStateService
         return GetCharacterSelectScreen(currentScreen)?.GetNodeOrNull<NConfirmButton>("ConfirmButton");
     }
 
+    public static NMainMenuTextButton? GetMainMenuContinueButton(NMainMenu mainMenu)
+    {
+        return mainMenu.GetNodeOrNull<NMainMenuTextButton>("MainMenuTextButtons/ContinueButton");
+    }
+
+    public static NMainMenuTextButton? GetMainMenuAbandonRunButton(NMainMenu mainMenu)
+    {
+        return mainMenu.GetNodeOrNull<NMainMenuTextButton>("MainMenuTextButtons/AbandonRunButton");
+    }
+
+    public static NMainMenuTextButton? GetMainMenuSingleplayerButton(NMainMenu mainMenu)
+    {
+        return mainMenu.GetNodeOrNull<NMainMenuTextButton>("MainMenuTextButtons/SingleplayerButton");
+    }
+
+    public static NMainMenuTextButton? GetMainMenuTimelineButton(NMainMenu mainMenu)
+    {
+        return mainMenu.GetNodeOrNull<NMainMenuTextButton>("MainMenuTextButtons/TimelineButton");
+    }
+
+    public static NTimelineScreen? GetTimelineScreen(IScreenContext? currentScreen)
+    {
+        if (currentScreen is NTimelineScreen timelineScreen && timelineScreen.IsVisibleInTree())
+        {
+            return timelineScreen;
+        }
+
+        return null;
+    }
+
+    public static IReadOnlyList<NEpochSlot> GetTimelineSlots(IScreenContext? currentScreen)
+    {
+        var timelineScreen = GetTimelineScreen(currentScreen);
+        if (timelineScreen == null)
+        {
+            return Array.Empty<NEpochSlot>();
+        }
+
+        return FindDescendants<NEpochSlot>(timelineScreen)
+            .Where(slot => slot.IsVisibleInTree() && slot.model != null && slot.State != EpochSlotState.NotObtained)
+            .OrderBy(slot => slot.GlobalPosition.X)
+            .ThenBy(slot => slot.GlobalPosition.Y)
+            .ToArray();
+    }
+
+    public static NEpochInspectScreen? GetTimelineInspectScreen(IScreenContext? currentScreen)
+    {
+        var timelineScreen = GetTimelineScreen(currentScreen);
+        var inspectScreen = timelineScreen?.GetNodeOrNull<NEpochInspectScreen>("%EpochInspectScreen");
+        return inspectScreen?.Visible == true ? inspectScreen : null;
+    }
+
+    public static NUnlockScreen? GetTimelineUnlockScreen(IScreenContext? currentScreen)
+    {
+        var timelineScreen = GetTimelineScreen(currentScreen);
+        if (timelineScreen == null)
+        {
+            return null;
+        }
+
+        return FindDescendants<NUnlockScreen>(timelineScreen)
+            .FirstOrDefault(screen => screen.IsVisibleInTree());
+    }
+
+    public static NButton? GetTimelineBackButton(IScreenContext? currentScreen)
+    {
+        return GetTimelineScreen(currentScreen)?.GetNodeOrNull<NButton>("BackButton");
+    }
+
+    public static NButton? GetTimelineInspectCloseButton(IScreenContext? currentScreen)
+    {
+        return GetTimelineInspectScreen(currentScreen)?.GetNodeOrNull<NButton>("%CloseButton");
+    }
+
+    public static NButton? GetTimelineUnlockConfirmButton(IScreenContext? currentScreen)
+    {
+        return GetTimelineUnlockScreen(currentScreen)?.GetNodeOrNull<NButton>("ConfirmButton");
+    }
+
+    public static NMainMenuSubmenuStack? GetMainMenuSubmenuStack(Node? node)
+    {
+        var current = node;
+        while (current != null)
+        {
+            if (current is NMainMenuSubmenuStack submenuStack)
+            {
+                return submenuStack;
+            }
+
+            current = current.GetParent();
+        }
+
+        return null;
+    }
+
     public static IScreenContext? GetOpenModal()
     {
         return NModalContainer.Instance?.OpenModal;
@@ -2030,6 +2371,8 @@ internal sealed class GameStatePayload
 
     public CharacterSelectPayload? character_select { get; init; }
 
+    public TimelinePayload? timeline { get; init; }
+
     public ChestPayload? chest { get; init; }
 
     public EventPayload? @event { get; init; }
@@ -2142,6 +2485,34 @@ internal sealed class CharacterSelectOptionPayload
     public bool is_selected { get; init; }
 
     public bool is_random { get; init; }
+}
+
+internal sealed class TimelinePayload
+{
+    public bool back_enabled { get; init; }
+
+    public bool inspect_open { get; init; }
+
+    public bool unlock_screen_open { get; init; }
+
+    public bool can_choose_epoch { get; init; }
+
+    public bool can_confirm_overlay { get; init; }
+
+    public TimelineSlotPayload[] slots { get; init; } = Array.Empty<TimelineSlotPayload>();
+}
+
+internal sealed class TimelineSlotPayload
+{
+    public int index { get; init; }
+
+    public string epoch_id { get; init; } = string.Empty;
+
+    public string title { get; init; } = string.Empty;
+
+    public string state { get; init; } = string.Empty;
+
+    public bool is_actionable { get; init; }
 }
 
 internal sealed class ChestPayload

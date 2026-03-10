@@ -70,6 +70,9 @@ uv run sts2-mcp-server
 必须覆盖：
 
 1. `CHARACTER_SELECT`
+0. `MAIN_MENU -> open_character_select`
+0. 如存在存档：`MAIN_MENU -> continue_run` 或 `abandon_run -> confirm_modal`
+0. 如单人入口被时间线门控：`MAIN_MENU -> open_timeline -> close_main_menu_submenu -> open_character_select`
 2. `select_character`
 3. `embark`
 4. 如出现 `MODAL` / FTUE，执行 `confirm_modal` 或 `dismiss_modal`
@@ -79,6 +82,10 @@ uv run sts2-mcp-server
 
 - `character_select.selected_character_id` 与实际选择一致
 - `available_actions` 在开局阶段准确暴露 `select_character` / `embark`
+- `available_actions` 在主菜单阶段准确暴露 `open_character_select`
+- 有存档时能准确暴露 `continue_run` / `abandon_run`
+- 时间线门控出现时能准确暴露 `open_timeline`，并可通过 `close_main_menu_submenu` 返回主菜单
+- 时间线子流程可通过 `timeline.slots[]`、`choose_timeline_epoch`、`confirm_timeline_overlay` 完成解锁推进
 - Modal 出现时普通动作被正确拦截
 
 ### B. 地图与战斗链路

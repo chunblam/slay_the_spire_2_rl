@@ -45,6 +45,13 @@
 | `choose_reward_card` | 已验证 |
 | `collect_rewards_and_proceed` | 已验证 |
 | `proceed` | 已验证 |
+| `continue_run` | 代码已完成，待实机验证 |
+| `abandon_run` | 代码已完成，待实机验证 |
+| `open_character_select` | 代码已完成，待实机验证 |
+| `open_timeline` | 代码已完成，待实机验证 |
+| `close_main_menu_submenu` | 代码已完成，待实机验证 |
+| `choose_timeline_epoch` | 代码已完成，待实机验证 |
+| `confirm_timeline_overlay` | 代码已完成，待实机验证 |
 | `skip_reward_cards` | 代码已完成，待实机验证 |
 | `select_deck_card` | 代码已完成，待实机验证 |
 | `open_chest` | 代码已完成，待实机验证 |
@@ -91,6 +98,13 @@
 - `get_available_actions`
 - `end_turn`
 - `play_card`
+- `continue_run`
+- `abandon_run`
+- `open_character_select`
+- `open_timeline`
+- `close_main_menu_submenu`
+- `choose_timeline_epoch`
+- `confirm_timeline_overlay`
 - `choose_map_node`
 - `claim_reward`
 - `choose_reward_card`
@@ -156,6 +170,13 @@
 
 ### T-5: Phase 5 全链路补齐
 
+- [x] `continue_run`
+- [x] `abandon_run`
+- [x] `open_character_select`
+- [x] `open_timeline`
+- [x] `close_main_menu_submenu`
+- [x] `choose_timeline_epoch`
+- [x] `confirm_timeline_overlay`
 - [x] `CharacterSelectPayload`
 - [x] `ModalPayload`
 - [x] `GameOverPayload`

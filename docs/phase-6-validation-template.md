@@ -34,6 +34,10 @@
 
 ### 1. 开局链路
 
+- [ ] 如存在存档：`continue_run` 或 `abandon_run`
+- [ ] `MAIN_MENU -> open_character_select`
+- [ ] 如单人入口被时间线门控：`open_timeline -> close_main_menu_submenu -> open_character_select`
+- [ ] 如时间线存在可解锁 epoch：`choose_timeline_epoch -> confirm_timeline_overlay`
 - [ ] `CHARACTER_SELECT` 可读取
 - [ ] `select_character`
 - [ ] `embark`
