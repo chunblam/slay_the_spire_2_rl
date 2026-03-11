@@ -2858,13 +2858,18 @@ internal static class GameActionService
                 return true;
             }
 
-            if (!GodotObject.IsInstanceValid(slot) || slot.State != previousState)
+            if (GameStateService.CanConfirmTimelineOverlay(currentScreen))
             {
                 return true;
             }
 
             if (GameStateService.GetTimelineInspectScreen(currentScreen) != null ||
                 GameStateService.GetTimelineUnlockScreen(currentScreen) != null)
+            {
+                continue;
+            }
+
+            if (!GodotObject.IsInstanceValid(slot) || slot.State != previousState)
             {
                 return true;
             }
