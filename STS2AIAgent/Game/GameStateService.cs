@@ -628,8 +628,9 @@ internal static class GameStateService
     public static bool CanBuyShopPotion(IScreenContext? currentScreen)
     {
         var inventoryScreen = GetMerchantInventoryScreen(currentScreen);
+        var inventory = GetMerchantInventory(currentScreen);
         return inventoryScreen != null && inventoryScreen.IsOpen &&
-            GetMerchantPotionEntries(currentScreen).Any(entry => entry.IsStocked && entry.EnoughGold);
+            GetMerchantPotionEntries(currentScreen).Any(entry => CanPurchaseShopPotion(inventory?.Player, entry));
     }
 
     public static bool CanRemoveCardAtShop(IScreenContext? currentScreen)
@@ -1616,7 +1617,7 @@ internal static class GameStateService
             can_close = CanCloseShopInventory(currentScreen),
             cards = cards,
             relics = inventory.RelicEntries.Select((entry, index) => BuildShopRelicPayload(entry, index)).ToArray(),
-            potions = inventory.PotionEntries.Select((entry, index) => BuildShopPotionPayload(entry, index)).ToArray(),
+            potions = inventory.PotionEntries.Select((entry, index) => BuildShopPotionPayload(entry, index, inventory.Player)).ToArray(),
             card_removal = BuildShopCardRemovalPayload(inventory.CardRemovalEntry)
         };
     }
@@ -2029,7 +2030,7 @@ internal static class GameStateService
         };
     }
 
-    private static ShopPotionPayload BuildShopPotionPayload(MerchantPotionEntry entry, int index)
+    private static ShopPotionPayload BuildShopPotionPayload(MerchantPotionEntry entry, int index, Player? player)
     {
         var potion = entry.Model;
         return new ShopPotionPayload
@@ -2041,8 +2042,15 @@ internal static class GameStateService
             usage = potion?.Usage.ToString(),
             price = entry.IsStocked ? entry.Cost : 0,
             is_stocked = entry.IsStocked,
-            enough_gold = entry.IsStocked && entry.EnoughGold
+            enough_gold = CanPurchaseShopPotion(player, entry)
         };
+    }
+
+    private static bool CanPurchaseShopPotion(Player? player, MerchantPotionEntry entry)
+    {
+        return entry.IsStocked &&
+            entry.EnoughGold &&
+            player?.PotionSlots.Any(slot => slot == null) == true;
     }
 
     private static ShopCardRemovalPayload? BuildShopCardRemovalPayload(MerchantCardRemovalEntry? entry)

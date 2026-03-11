@@ -843,9 +843,7 @@ internal static class GameActionService
             });
         }
 
-        var rewardButtons = GameStateService.GetRewardButtons(currentScreen)
-            .Where(button => button.IsEnabled)
-            .ToList();
+        var rewardButtons = GameStateService.GetRewardButtons(currentScreen);
 
         if (request.option_index < 0 || request.option_index >= rewardButtons.Count)
         {
@@ -858,7 +856,16 @@ internal static class GameActionService
         }
 
         var selectedReward = rewardButtons[request.option_index.Value];
-        var previousRewardCount = rewardButtons.Count;
+        if (!selectedReward.IsEnabled)
+        {
+            throw new ApiException(409, "invalid_action", "The selected reward is not claimable in the current state.", new
+            {
+                action = "claim_reward",
+                option_index = request.option_index
+            });
+        }
+
+        var previousRewardCount = rewardButtons.Count(button => button.IsEnabled);
         selectedReward.ForceClick();
         var stable = await WaitForRewardButtonResolutionAsync(currentScreen, previousRewardCount, TimeSpan.FromSeconds(10));
 
@@ -2876,23 +2883,13 @@ internal static class GameActionService
         {
             await WaitForNextFrameAsync();
 
-            if (potion.HasBeenRemovedFromState || potion.IsQueued)
-            {
-                return true;
-            }
-
-            if (potionIndex >= player.PotionSlots.Count)
-            {
-                return true;
-            }
-
-            if (!ReferenceEquals(player.PotionSlots[potionIndex], potion))
+            if (HasPotionUseSettled(player, potionIndex, potion))
             {
                 return true;
             }
         }
 
-        return potion.HasBeenRemovedFromState || potion.IsQueued || !ReferenceEquals(player.PotionSlots[potionIndex], potion);
+        return HasPotionUseSettled(player, potionIndex, potion);
     }
 
     private static async Task<bool> WaitForPotionDiscardTransitionAsync(Player player, int potionIndex, PotionModel potion, TimeSpan timeout)
@@ -2919,6 +2916,21 @@ internal static class GameActionService
         }
 
         return potion.HasBeenRemovedFromState || !ReferenceEquals(player.PotionSlots[potionIndex], potion);
+    }
+
+    private static bool HasPotionUseSettled(Player player, int potionIndex, PotionModel potion)
+    {
+        if (potion.HasBeenRemovedFromState)
+        {
+            return true;
+        }
+
+        if (potionIndex >= player.PotionSlots.Count)
+        {
+            return true;
+        }
+
+        return !ReferenceEquals(player.PotionSlots[potionIndex], potion);
     }
 
     private static async Task<ActionResponsePayload> ExecuteModalButtonAsync(
