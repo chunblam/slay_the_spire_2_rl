@@ -246,8 +246,22 @@ if ($null -ne $state.game_over -and $state.game_over.can_return_to_main_menu) {
 }
 
 if ($state.in_combat -and $null -ne $state.combat) {
+    $combatSelectionActive = ($state.screen -eq "CARD_SELECTION") -and ($null -ne $state.selection)
+
     if (@($state.combat.hand | Where-Object { $_.playable }).Count -gt 0) {
-        Add-MissingActionFailure -Failures $failures -ActionSet $actionSet -ActionName "play_card" -Reason "combat.hand[] has playable cards"
+        if ($combatSelectionActive) {
+            Add-ForbiddenActionFailure -Failures $failures -ActionSet $actionSet -ActionName "play_card" -Reason "combat card-selection overlay should suspend play_card"
+        }
+        else {
+            Add-MissingActionFailure -Failures $failures -ActionSet $actionSet -ActionName "play_card" -Reason "combat.hand[] has playable cards"
+        }
+    }
+    elseif (-not $combatSelectionActive) {
+        Add-ForbiddenActionFailure -Failures $failures -ActionSet $actionSet -ActionName "play_card" -Reason "combat.hand[] has no playable cards"
+    }
+
+    if ($combatSelectionActive) {
+        Add-ForbiddenActionFailure -Failures $failures -ActionSet $actionSet -ActionName "end_turn" -Reason "combat card-selection overlay should suspend end_turn"
     }
 
     if ($null -ne $state.combat.player) {

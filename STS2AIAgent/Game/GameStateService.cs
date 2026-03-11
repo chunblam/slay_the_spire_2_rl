@@ -2448,6 +2448,7 @@ internal static class GameStateService
             NCardRewardSelectionScreen => "REWARD",
             NChooseACardSelectionScreen => "CARD_SELECTION",
             NDeckCardSelectScreen or NDeckUpgradeSelectScreen or NDeckTransformSelectScreen or NDeckEnchantSelectScreen => "CARD_SELECTION",
+            NCardGridSelectionScreen => "CARD_SELECTION",
             NRewardsScreen => "REWARD",
             NTreasureRoom or NTreasureRoomRelicCollection => "CHEST",
             NRestSiteRoom => "REST",
