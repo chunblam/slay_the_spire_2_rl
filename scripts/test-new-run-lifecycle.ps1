@@ -1,6 +1,8 @@
 param(
     [string]$BaseUrl = "http://127.0.0.1:8080",
-    [int]$TimeoutSec = 5,
+    [int]$TimeoutSec = 15,
+    [int]$RequestRetries = 3,
+    [int]$RetryDelayMs = 500,
     [int]$PollAttempts = 120,
     [int]$PollDelayMs = 250
 )
@@ -16,30 +18,42 @@ function Invoke-ApiJson {
 
     $uri = $BaseUrl.TrimEnd("/") + $Path
 
-    try {
-        if ($null -eq $Body) {
-            $response = Invoke-WebRequest -Method $Method -Uri $uri -UseBasicParsing -TimeoutSec $TimeoutSec
-        }
-        else {
-            $response = Invoke-WebRequest -Method $Method -Uri $uri -UseBasicParsing -TimeoutSec $TimeoutSec -ContentType "application/json" -Body ($Body | ConvertTo-Json -Depth 8 -Compress)
-        }
-
-        return $response.Content | ConvertFrom-Json
-    }
-    catch {
-        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
-            return $_.ErrorDetails.Message | ConvertFrom-Json
-        }
-
-        if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream()) {
-            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-            $content = $reader.ReadToEnd()
-            if ($content) {
-                return $content | ConvertFrom-Json
+    for ($attempt = 0; $attempt -lt $RequestRetries; $attempt++) {
+        try {
+            if ($null -eq $Body) {
+                $response = Invoke-WebRequest -Method $Method -Uri $uri -UseBasicParsing -TimeoutSec $TimeoutSec
             }
-        }
+            else {
+                $response = Invoke-WebRequest -Method $Method -Uri $uri -UseBasicParsing -TimeoutSec $TimeoutSec -ContentType "application/json" -Body ($Body | ConvertTo-Json -Depth 8 -Compress)
+            }
 
-        throw
+            return $response.Content | ConvertFrom-Json
+        }
+        catch {
+            if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                return $_.ErrorDetails.Message | ConvertFrom-Json
+            }
+
+            if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream()) {
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                $content = $reader.ReadToEnd()
+                if ($content) {
+                    return $content | ConvertFrom-Json
+                }
+            }
+
+            $isRetriable = $_.Exception -is [System.Net.WebException] -and (
+                $_.Exception.Status -eq [System.Net.WebExceptionStatus]::Timeout -or
+                $_.Exception.Status -eq [System.Net.WebExceptionStatus]::ConnectFailure
+            )
+
+            if ($isRetriable -and $attempt -lt ($RequestRetries - 1)) {
+                Start-Sleep -Milliseconds $RetryDelayMs
+                continue
+            }
+
+            throw
+        }
     }
 }
 
