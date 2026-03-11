@@ -794,9 +794,8 @@ internal static class GameActionService
     {
         var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
         var screen = GameStateService.ResolveScreen(currentScreen);
-        var proceedButton = GameStateService.GetProceedButton(currentScreen);
 
-        if (proceedButton == null)
+        if (!GameStateService.CanProceed(currentScreen))
         {
             throw new ApiException(409, "invalid_action", "Action is not available in the current state.", new
             {
@@ -804,6 +803,13 @@ internal static class GameActionService
                 screen
             });
         }
+
+        var proceedButton = GameStateService.GetProceedButton(currentScreen)
+            ?? throw new ApiException(503, "state_unavailable", "Proceed button not found.", new
+            {
+                action = "proceed",
+                screen
+            }, retryable: true);
 
         proceedButton.ForceClick();
         var stable = await WaitForProceedTransitionAsync(currentScreen, TimeSpan.FromSeconds(10));
@@ -2401,16 +2407,34 @@ internal static class GameActionService
             await result.task;
         }
 
-        await WaitForNextFrameAsync();
+        var stable = await WaitForConsoleCommandStabilityAsync(TimeSpan.FromSeconds(10));
 
         return new ActionResponsePayload
         {
             action = "run_console_command",
-            status = "completed",
-            stable = true,
-            message = string.IsNullOrWhiteSpace(result.msg) ? "Console command executed." : result.msg,
+            status = stable ? "completed" : "pending",
+            stable = stable,
+            message = stable
+                ? string.IsNullOrWhiteSpace(result.msg) ? "Console command executed." : result.msg
+                : "Console command executed but state is still transitioning.",
             state = GameStateService.BuildStatePayload()
         };
+    }
+
+    private static async Task<bool> WaitForConsoleCommandStabilityAsync(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            await WaitForNextFrameAsync();
+
+            if (IsStableScreenState(ActiveScreenContext.Instance.GetCurrentScreen(), allowMapScreen: true))
+            {
+                return true;
+            }
+        }
+
+        return IsStableScreenState(ActiveScreenContext.Instance.GetCurrentScreen(), allowMapScreen: true);
     }
 
     private static DevConsole? GetDevConsoleCore(NDevConsole console)
@@ -3092,13 +3116,32 @@ internal static class GameActionService
             await WaitForNextFrameAsync();
 
             var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
-            if (currentScreen is not NTreasureRoomRelicCollection)
+            if (currentScreen is NTreasureRoomRelicCollection)
+            {
+                continue;
+            }
+
+            if (currentScreen is NTreasureRoom)
+            {
+                if (GameStateService.GetProceedButton(currentScreen) != null)
+                {
+                    await WaitForNextFrameAsync();
+
+                    var confirmedScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+                    return confirmedScreen is NTreasureRoom && GameStateService.GetProceedButton(confirmedScreen) != null;
+                }
+
+                continue;
+            }
+
+            if (IsStableScreenState(currentScreen, allowMapScreen: true))
             {
                 return true;
             }
         }
 
-        return false;
+        var screen = ActiveScreenContext.Instance.GetCurrentScreen();
+        return screen is NTreasureRoom && GameStateService.GetProceedButton(screen) != null;
     }
 
     /// <summary>

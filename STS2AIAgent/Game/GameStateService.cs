@@ -507,6 +507,11 @@ internal static class GameStateService
 
     public static bool CanProceed(IScreenContext? currentScreen)
     {
+        if (currentScreen is NRewardsScreen or NCardRewardSelectionScreen)
+        {
+            return false;
+        }
+
         return GetProceedButton(currentScreen) != null;
     }
 
@@ -1674,10 +1679,11 @@ internal static class GameStateService
         if (relicCollection != null)
         {
             var relics = RunManager.Instance.TreasureRoomRelicSynchronizer.CurrentRelics;
+            var hasRelicBeenClaimed = GetProceedButton(currentScreen) != null;
             return new ChestPayload
             {
                 is_opened = true,
-                has_relic_been_claimed = false,
+                has_relic_been_claimed = hasRelicBeenClaimed,
                 relic_options = BuildTreasureRelicOptions(relics)
             };
         }
@@ -1686,10 +1692,7 @@ internal static class GameStateService
         {
             var chestButton = treasureRoom.GetNodeOrNull<NButton>("%Chest");
             var isOpened = chestButton == null || !GodotObject.IsInstanceValid(chestButton) || !chestButton.IsEnabled;
-            var proceedButton = treasureRoom.ProceedButton;
-            var hasRelicBeenClaimed = proceedButton != null
-                && GodotObject.IsInstanceValid(proceedButton)
-                && proceedButton.IsEnabled;
+            var hasRelicBeenClaimed = GetProceedButton(currentScreen) != null;
 
             return new ChestPayload
             {

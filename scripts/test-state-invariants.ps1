@@ -59,6 +59,9 @@ if ($null -ne $state.selection -and @($state.selection.cards).Count -gt 0) {
 }
 
 if ($null -ne $state.reward) {
+    Add-MissingActionFailure -Failures $failures -ActionSet $actionSet -ActionName "collect_rewards_and_proceed" -Reason "reward payload is present"
+    Add-ForbiddenActionFailure -Failures $failures -ActionSet $actionSet -ActionName "proceed" -Reason "reward flows should use reward-specific actions instead of proceed"
+
     if ($state.reward.pending_card_choice) {
         if (@($state.reward.card_options).Count -gt 0) {
             Add-MissingActionFailure -Failures $failures -ActionSet $actionSet -ActionName "choose_reward_card" -Reason "reward.card_options[] is populated"
@@ -67,16 +70,10 @@ if ($null -ne $state.reward) {
         if (@($state.reward.alternatives).Count -gt 0) {
             Add-MissingActionFailure -Failures $failures -ActionSet $actionSet -ActionName "skip_reward_cards" -Reason "reward.alternatives[] is populated"
         }
-
-        Add-ForbiddenActionFailure -Failures $failures -ActionSet $actionSet -ActionName "proceed" -Reason "reward.pending_card_choice=true should stay inside the card-choice overlay"
     }
     else {
         if (@($state.reward.rewards | Where-Object { $_.claimable }).Count -gt 0) {
             Add-MissingActionFailure -Failures $failures -ActionSet $actionSet -ActionName "claim_reward" -Reason "reward.rewards[] still contains claimable items"
-        }
-
-        if ($state.reward.can_proceed) {
-            Add-MissingActionFailure -Failures $failures -ActionSet $actionSet -ActionName "proceed" -Reason "reward.can_proceed=true on the main reward screen"
         }
     }
 }
@@ -92,6 +89,10 @@ if ($null -ne $state.chest) {
 
     if ((@($state.chest.relic_options).Count -gt 0) -and (-not $state.chest.has_relic_been_claimed)) {
         Add-MissingActionFailure -Failures $failures -ActionSet $actionSet -ActionName "choose_treasure_relic" -Reason "chest.relic_options[] is populated"
+    }
+
+    if (($actionSet.Contains("proceed")) -and (-not $state.chest.has_relic_been_claimed)) {
+        $failures.Add("chest.has_relic_been_claimed should be true before proceed is exposed")
     }
 }
 
