@@ -22,7 +22,14 @@ import os
 
 from sts2_mcp.server import create_server
 
-ESSENTIAL_TOOLS = {"health_check", "get_game_state", "get_available_actions", "act"}
+ESSENTIAL_TOOLS = {
+    "health_check",
+    "get_game_state",
+    "get_available_actions",
+    "wait_for_event",
+    "wait_until_actionable",
+    "act",
+}
 GUIDED_DEBUG_TOOLS = ESSENTIAL_TOOLS | {"run_console_command"}
 LEGACY_ACTION_TOOLS = {
     "play_card",
