@@ -1,8 +1,16 @@
 param(
-    [string]$RepoRoot = "C:/Users/chart/Documents/project/sp"
+    [string]$RepoRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+}
+else {
+    $RepoRoot = (Resolve-Path $RepoRoot).Path
+}
+
 $mcpRoot = Join-Path $RepoRoot "mcp_server"
 
 Push-Location $mcpRoot

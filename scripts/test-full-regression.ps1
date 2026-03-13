@@ -1,9 +1,16 @@
 param(
-    [string]$ProjectRoot = "C:/Users/chart/Documents/project/sp",
+    [string]$ProjectRoot = "",
     [switch]$KeepGameRunning
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+}
+else {
+    $ProjectRoot = (Resolve-Path $ProjectRoot).Path
+}
 
 $scriptRoot = Join-Path $ProjectRoot "scripts"
 $env:UV_CACHE_DIR = Join-Path $ProjectRoot ".uv-cache"
