@@ -407,6 +407,11 @@ def create_server(client: Sts2Client | None = None, tool_profile: str | None = N
     profile = _normalize_tool_profile(tool_profile)
     mcp = FastMCP("STS2 AI Agent")
 
+    def _agent_state() -> dict[str, Any]:
+        state = sts2.get_state()
+        agent_view = state.get("agent_view")
+        return agent_view if isinstance(agent_view, dict) else state
+
     def _is_actionable_state(state: dict[str, Any]) -> bool:
         actions = state.get("available_actions")
         return isinstance(actions, list) and len(actions) > 0
@@ -482,24 +487,12 @@ def create_server(client: Sts2Client | None = None, tool_profile: str | None = N
 
     @mcp.tool
     def get_game_state() -> dict[str, Any]:
-        """Read a full snapshot of the current game state.
+        """Read the compact agent-facing game state snapshot."""
+        return _agent_state()
 
-        Call this before making decisions. The payload includes the current
-        screen, normalized `session` metadata, available action names, combat
-        entities, reward state, map options, shop state, and run metadata.
-
-        The top-level `session` payload is the AI-facing branch point:
-            - `session.mode`: `singleplayer` or `multiplayer`
-            - `session.phase`: `menu`, `character_select`, `multiplayer_lobby`, or `run`
-            - `session.control_scope`: always `local_player`
-
-        Use `session` plus `available_actions` to decide what to do next. Do
-        not infer multiplayer control from tool names.
-
-        Defect-specific combat data is exposed through `combat.player`, which
-        now includes `focus`, `base_orb_slots`, `orb_capacity`,
-        `empty_orb_slots`, and `orbs[]`.
-        """
+    @mcp.tool
+    def get_raw_game_state() -> dict[str, Any]:
+        """Read the full raw `/state` snapshot for debugging or schema inspection."""
         return sts2.get_state()
 
     @mcp.tool
