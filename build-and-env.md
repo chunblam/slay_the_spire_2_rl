@@ -123,10 +123,21 @@ uv run python -c "from sts2_mcp.client import Sts2Client; import json; print(jso
 ./scripts/test-full-regression.sh
 ```
 
+非默认安装路径可以显式透传：
+
+```bash
+./scripts/test-full-regression.sh \
+  --game-root "/path/to/Slay the Spire 2" \
+  --exe-path "/path/to/SlayTheSpire2.app/Contents/MacOS/Slay the Spire 2" \
+  --app-manifest "/path/to/appmanifest_2868840.acf" \
+  --app-id 2868840
+```
+
 说明：
 
 - 这条 `bash` 回归链路覆盖构建、Mod 装载、debug gating、MCP tool profile、主菜单生命周期、新局生命周期、完整状态不变量，以及双进程多人大厅流。
 - 也可以单独运行 `./scripts/test-state-invariants.sh` 和 `./scripts/test-multiplayer-lobby-flow.sh` 做定向验证。
+- 如果启动链路需要临时写入 `steam_appid.txt`，`start-game-session.sh` 会在退出时自动恢复；也可以传 `--skip-steam-app-id-file` 禁用这一步。
 
 ## 6. Troubleshooting
 

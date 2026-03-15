@@ -1731,6 +1731,14 @@ def suite_enemy_intents_payload(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def add_startup_argument_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--exe-path")
+    parser.add_argument("--game-root")
+    parser.add_argument("--app-manifest")
+    parser.add_argument("--app-id")
+    parser.add_argument("--skip-steam-app-id-file", action="store_true")
+
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
@@ -1756,12 +1764,38 @@ def run_repo_script(script_name: str, *args: str) -> subprocess.CompletedProcess
     raise ValidationError(f"{script_name} failed with exit code {completed.returncode}.")
 
 
+def append_startup_args(
+    argv: list[str],
+    *,
+    exe_path: str | None = None,
+    game_root: str | None = None,
+    app_manifest: str | None = None,
+    app_id: str | None = None,
+    skip_steam_app_id_file: bool = False,
+) -> None:
+    if exe_path:
+        argv.extend(["--exe-path", exe_path])
+    if game_root:
+        argv.extend(["--game-root", game_root])
+    if app_manifest:
+        argv.extend(["--app-manifest", app_manifest])
+    if app_id:
+        argv.extend(["--app-id", app_id])
+    if skip_steam_app_id_file:
+        argv.append("--skip-steam-app-id-file")
+
+
 def start_debug_session(
     api_port: int,
     *,
     keep_existing_processes: bool,
     attempts: int,
     delay_seconds: float,
+    exe_path: str | None = None,
+    game_root: str | None = None,
+    app_manifest: str | None = None,
+    app_id: str | None = None,
+    skip_steam_app_id_file: bool = False,
 ) -> dict[str, Any]:
     args = [
         "--enable-debug-actions",
@@ -1774,6 +1808,14 @@ def start_debug_session(
     ]
     if keep_existing_processes:
         args.append("--keep-existing-processes")
+    append_startup_args(
+        args,
+        exe_path=exe_path,
+        game_root=game_root,
+        app_manifest=app_manifest,
+        app_id=app_id,
+        skip_steam_app_id_file=skip_steam_app_id_file,
+    )
 
     completed = run_repo_script("start-game-session.sh", *args)
     stdout = completed.stdout.strip()
@@ -1830,22 +1872,25 @@ def wait_for_port_release(port: int, *, attempts: int = 20, delay_ms: int = 500)
         time.sleep(delay_ms / 1000.0)
 
 
-def find_character_option(options: list[dict[str, Any]], character_id: str) -> dict[str, Any]:
-    option = next(
-        (
-            candidate
-            for candidate in options
-            if str(candidate.get("character_id")) == character_id and not candidate.get("is_locked")
-        ),
-        None,
-    )
-    if option is None:
-        raise ValidationError(f"Expected character '{character_id}' to be selectable, but options were: {json.dumps(options, ensure_ascii=False)}")
-    if to_int(option.get("index"), -1) < 0:
-        raise ValidationError(
-            f"Expected character '{character_id}' to expose a non-negative selection index, but option was: {json.dumps(option, ensure_ascii=False)}"
-        )
-    return option
+def choose_selectable_character(
+    options: list[dict[str, Any]],
+    *,
+    excluded_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    selectable = [
+        candidate
+        for candidate in options
+        if not candidate.get("is_locked") and to_int(candidate.get("index"), -1) >= 0 and has_text(candidate.get("character_id"))
+    ]
+    if not selectable:
+        raise ValidationError(f"Expected at least one selectable character option, but received: {json.dumps(options, ensure_ascii=False)}")
+
+    excluded_ids = excluded_ids or set()
+    for candidate in selectable:
+        if str(candidate.get("character_id")) not in excluded_ids:
+            return candidate
+
+    return selectable[0]
 
 
 def suite_multiplayer_lobby_flow(args: argparse.Namespace) -> dict[str, Any]:
@@ -1860,6 +1905,11 @@ def suite_multiplayer_lobby_flow(args: argparse.Namespace) -> dict[str, Any]:
             keep_existing_processes=False,
             attempts=args.start_attempts,
             delay_seconds=args.start_delay_seconds,
+            exe_path=args.exe_path,
+            game_root=args.game_root,
+            app_manifest=args.app_manifest,
+            app_id=args.app_id,
+            skip_steam_app_id_file=args.skip_steam_app_id_file,
         )
         host_client = ApiClient(
             base_url=host_base_url,
@@ -1897,17 +1947,19 @@ def suite_multiplayer_lobby_flow(args: argparse.Namespace) -> dict[str, Any]:
 
         assert_state_invariants(host_client)
 
-        host_character = find_character_option(
-            list((host_lobby_state.get("multiplayer_lobby") or {}).get("characters") or []),
-            "SILENT",
+        host_lobby = host_lobby_state.get("multiplayer_lobby") or {}
+        host_character = choose_selectable_character(
+            list(host_lobby.get("characters") or []),
+            excluded_ids={str(host_lobby.get("selected_character_id") or "")} if has_text(host_lobby.get("selected_character_id")) else None,
         )
+        host_character_id = str(host_character.get("character_id"))
         ensure_action_ok(
             host_client.action("select_character", option_index=to_int(host_character.get("index"), -1)),
-            "select_character(SILENT)",
+            f"select_character({host_character_id})",
         )
         host_client.wait_for_state(
-            "host selected SILENT",
-            lambda current: (current.get("multiplayer_lobby") or {}).get("selected_character_id") == "SILENT",
+            f"host selected {host_character_id}",
+            lambda current: (current.get("multiplayer_lobby") or {}).get("selected_character_id") == host_character_id,
             attempts=args.poll_attempts,
             delay_ms=args.poll_delay_ms,
         )
@@ -1917,6 +1969,11 @@ def suite_multiplayer_lobby_flow(args: argparse.Namespace) -> dict[str, Any]:
             keep_existing_processes=True,
             attempts=args.start_attempts,
             delay_seconds=args.start_delay_seconds,
+            exe_path=args.exe_path,
+            game_root=args.game_root,
+            app_manifest=args.app_manifest,
+            app_id=args.app_id,
+            skip_steam_app_id_file=args.skip_steam_app_id_file,
         )
         client_client = ApiClient(
             base_url=client_base_url,
@@ -1962,27 +2019,34 @@ def suite_multiplayer_lobby_flow(args: argparse.Namespace) -> dict[str, Any]:
         assert_state_invariants(host_client)
         assert_state_invariants(client_client)
 
-        client_character = find_character_option(
-            list((client_lobby_state.get("multiplayer_lobby") or {}).get("characters") or []),
-            "DEFECT",
+        client_lobby = client_lobby_state.get("multiplayer_lobby") or {}
+        excluded_client_ids = {host_character_id}
+        current_client_character_id = str(client_lobby.get("selected_character_id") or "")
+        if current_client_character_id:
+            excluded_client_ids.add(current_client_character_id)
+
+        client_character = choose_selectable_character(
+            list(client_lobby.get("characters") or []),
+            excluded_ids=excluded_client_ids,
         )
+        client_character_id = str(client_character.get("character_id"))
         ensure_action_ok(
             client_client.action("select_character", option_index=to_int(client_character.get("index"), -1)),
-            "select_character(DEFECT)",
+            f"select_character({client_character_id})",
         )
         client_client.wait_for_state(
-            "client selected DEFECT",
-            lambda current: (current.get("multiplayer_lobby") or {}).get("selected_character_id") == "DEFECT",
+            f"client selected {client_character_id}",
+            lambda current: (current.get("multiplayer_lobby") or {}).get("selected_character_id") == client_character_id,
             attempts=args.poll_attempts,
             delay_ms=args.poll_delay_ms,
         )
         host_client.wait_for_state(
-            "host roster reflects DEFECT client",
+            f"host roster reflects {client_character_id} client",
             lambda current: len(
                 [
                     player
                     for player in list((current.get("multiplayer_lobby") or {}).get("players") or [])
-                    if not player.get("is_local") and player.get("character_id") == "DEFECT"
+                    if not player.get("is_local") and player.get("character_id") == client_character_id
                 ]
             )
             == 1,
@@ -2053,7 +2117,7 @@ def suite_multiplayer_lobby_flow(args: argparse.Namespace) -> dict[str, Any]:
                 "run_id": host_run_state.get("run_id"),
                 "net_game_type": (host_run_state.get("multiplayer") or {}).get("net_game_type"),
                 "player_count": len(list((host_run_state.get("run") or {}).get("players") or [])),
-                "selected_character_id": "SILENT",
+                "selected_character_id": host_character_id,
             },
             "client": {
                 "pid": to_int((client_session or {}).get("pid"), 0),
@@ -2062,7 +2126,7 @@ def suite_multiplayer_lobby_flow(args: argparse.Namespace) -> dict[str, Any]:
                 "run_id": client_run_state.get("run_id"),
                 "net_game_type": (client_run_state.get("multiplayer") or {}).get("net_game_type"),
                 "player_count": len(list((client_run_state.get("run") or {}).get("players") or [])),
-                "selected_character_id": "DEFECT",
+                "selected_character_id": client_character_id,
             },
         }
     finally:
@@ -2175,6 +2239,7 @@ def build_parser() -> argparse.ArgumentParser:
     multiplayer_flow.add_argument("--start-attempts", type=int, default=40)
     multiplayer_flow.add_argument("--start-delay-seconds", type=float, default=2.0)
     multiplayer_flow.add_argument("--keep-games-running", action="store_true")
+    add_startup_argument_options(multiplayer_flow)
     multiplayer_flow.set_defaults(func=suite_multiplayer_lobby_flow)
 
     return parser

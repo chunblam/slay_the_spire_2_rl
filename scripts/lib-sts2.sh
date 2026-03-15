@@ -88,6 +88,25 @@ sts2_detect_game_executable() {
   return 1
 }
 
+sts2_infer_game_root_from_executable() {
+  local exe_path="$1"
+  local exe_dir=""
+
+  if [[ -z "$exe_path" ]]; then
+    return 1
+  fi
+
+  exe_dir="$(cd -- "$(dirname -- "$exe_path")" && pwd)"
+  case "$exe_dir" in
+    */Contents/MacOS)
+      cd -- "$exe_dir/../.." && pwd
+      ;;
+    *)
+      printf '%s\n' "$exe_dir"
+      ;;
+  esac
+}
+
 sts2_default_app_manifest() {
   printf '%s\n' "$HOME/Library/Application Support/Steam/steamapps/appmanifest_2868840.acf"
 }
@@ -121,12 +140,10 @@ PY
 sts2_ensure_steam_app_id_file() {
   local game_executable="$1"
   local app_id="$2"
-  local target_dir
   local app_id_file
   local current_value=""
 
-  target_dir="$(cd -- "$(dirname -- "$game_executable")" && pwd)"
-  app_id_file="$target_dir/steam_appid.txt"
+  app_id_file="$(sts2_steam_app_id_file_path "$game_executable")"
 
   if [[ -f "$app_id_file" ]]; then
     current_value="$(tr -d '[:space:]' < "$app_id_file")"
@@ -137,6 +154,14 @@ sts2_ensure_steam_app_id_file() {
   fi
 
   printf '%s' "$app_id" > "$app_id_file"
+}
+
+sts2_steam_app_id_file_path() {
+  local game_executable="$1"
+  local target_dir
+
+  target_dir="$(cd -- "$(dirname -- "$game_executable")" && pwd)"
+  printf '%s\n' "$target_dir/steam_appid.txt"
 }
 
 sts2_port_in_use() {

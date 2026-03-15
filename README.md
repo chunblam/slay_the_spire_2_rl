@@ -159,6 +159,8 @@ http://127.0.0.1:8765/mcp
 - `STS2AIAgent` Mod 现在也提供了一个 macOS / Linux 可用的 `bash` 构建脚本：`./scripts/build-mod.sh`。
 - macOS / Linux 现在也提供了一组对齐 Windows 的 `bash` 验证脚本，包括 `start-game-session.sh`、`test-mod-load.sh`、`test-debug-console-gating.sh`、`test-mcp-tool-profile.sh`、`test-state-invariants.sh`、`test-multiplayer-lobby-flow.sh` 和 `test-full-regression.sh`。
 - `test-full-regression.sh` 现在会串起状态不变量检查和多人大厅流，覆盖单机主流程与双进程联机场景。
+- 这些验证入口支持显式透传 `--exe-path`、`--game-root`、`--app-manifest` 和 `--app-id`，方便在非默认 Steam 安装路径下运行。
+- `start-game-session.sh` 在需要时会临时写入 `steam_appid.txt` 来启动游戏，并在脚本退出时自动恢复；如果不希望脚本管理该文件，可以传 `--skip-steam-app-id-file`。
 - 如果你已经有可用的 Mod 文件（`STS2AIAgent.dll` 和 `STS2AIAgent.pck`），macOS 侧最需要的是把游戏本地 API 跑起来，然后用这里的 `mcp_server` 连接 `http://127.0.0.1:8080`。
 
 ### 5. 从源码构建 Mod

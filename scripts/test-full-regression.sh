@@ -9,16 +9,25 @@ source "$script_dir/lib-sts2.sh"
 repo_root="$(sts2_resolve_repo_root "${REPO_ROOT:-}")"
 keep_game_running=0
 configuration="${CONFIGURATION:-Debug}"
+exe_path="${STS2_EXE_PATH:-}"
+game_root="${STS2_GAME_ROOT:-}"
+app_manifest_path="${STS2_APP_MANIFEST:-}"
+app_id="${STS2_APP_ID:-}"
+skip_steam_app_id_file="${STS2_SKIP_STEAM_APP_ID_FILE:-0}"
 api_port="${STS2_API_PORT:-8080}"
 base_url="http://127.0.0.1:$api_port"
 current_pid=""
 failed=0
 failure_message=""
 results_file="$(mktemp)"
+build_game_root=""
+runtime_start_args=()
+build_mod_args=()
 
 usage() {
   cat <<'EOF'
-Usage: test-full-regression.sh [--repo-root PATH] [--configuration Debug|Release] [--keep-game-running]
+Usage: test-full-regression.sh [--repo-root PATH] [--configuration Debug|Release] [--exe-path PATH] [--game-root PATH]
+                               [--app-manifest PATH] [--app-id ID] [--skip-steam-app-id-file] [--keep-game-running]
 EOF
 }
 
@@ -27,7 +36,7 @@ cleanup() {
     if [[ -n "$current_pid" ]]; then
       sts2_stop_pid "$current_pid"
     fi
-    sts2_stop_running_games
+    sts2_stop_running_games "$exe_path"
   fi
   rm -f "$results_file"
 }
@@ -43,6 +52,26 @@ while [[ $# -gt 0 ]]; do
     --configuration)
       configuration="${2:-}"
       shift 2
+      ;;
+    --exe-path)
+      exe_path="${2:-}"
+      shift 2
+      ;;
+    --game-root)
+      game_root="${2:-}"
+      shift 2
+      ;;
+    --app-manifest)
+      app_manifest_path="${2:-}"
+      shift 2
+      ;;
+    --app-id)
+      app_id="${2:-}"
+      shift 2
+      ;;
+    --skip-steam-app-id-file)
+      skip_steam_app_id_file=1
+      shift
       ;;
     --keep-game-running)
       keep_game_running=1
@@ -60,7 +89,59 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "$game_root" && -n "$exe_path" ]]; then
+  build_game_root="$(sts2_infer_game_root_from_executable "$exe_path" || true)"
+else
+  build_game_root="$game_root"
+fi
+
+if [[ -n "$exe_path" ]]; then
+  runtime_start_args+=(--exe-path "$exe_path")
+fi
+if [[ -n "$game_root" ]]; then
+  runtime_start_args+=(--game-root "$game_root")
+fi
+if [[ -n "$app_manifest_path" ]]; then
+  runtime_start_args+=(--app-manifest "$app_manifest_path")
+fi
+if [[ -n "$app_id" ]]; then
+  runtime_start_args+=(--app-id "$app_id")
+fi
+if [[ "$skip_steam_app_id_file" == "1" ]]; then
+  runtime_start_args+=(--skip-steam-app-id-file)
+fi
+
+build_mod_args=("$script_dir/build-mod.sh" --repo-root "$repo_root" --configuration "$configuration")
+if [[ -n "$build_game_root" ]]; then
+  build_mod_args+=(--game-root "$build_game_root")
+fi
+
 export REPO_ROOT="$repo_root"
+if [[ -n "$exe_path" ]]; then
+  export STS2_EXE_PATH="$exe_path"
+else
+  unset STS2_EXE_PATH || true
+fi
+if [[ -n "$game_root" ]]; then
+  export STS2_GAME_ROOT="$game_root"
+else
+  unset STS2_GAME_ROOT || true
+fi
+if [[ -n "$app_manifest_path" ]]; then
+  export STS2_APP_MANIFEST="$app_manifest_path"
+else
+  unset STS2_APP_MANIFEST || true
+fi
+if [[ -n "$app_id" ]]; then
+  export STS2_APP_ID="$app_id"
+else
+  unset STS2_APP_ID || true
+fi
+if [[ "$skip_steam_app_id_file" == "1" ]]; then
+  export STS2_SKIP_STEAM_APP_ID_FILE=1
+else
+  unset STS2_SKIP_STEAM_APP_ID_FILE || true
+fi
 
 record_result() {
   local name="$1"
@@ -122,7 +203,7 @@ PY
 
 start_debug_session() {
   local session_json
-  session_json="$("$script_dir/start-game-session.sh" --enable-debug-actions --api-port "$api_port")"
+  session_json="$("$script_dir/start-game-session.sh" --enable-debug-actions --api-port "$api_port" "${runtime_start_args[@]}")"
   current_pid="$(printf '%s' "$session_json" | sts2_json_value "pid")"
 }
 
@@ -136,7 +217,7 @@ stop_current_game() {
     sts2_stop_pid "$current_pid"
     current_pid=""
   else
-    sts2_stop_running_games
+    sts2_stop_running_games "$exe_path"
   fi
 }
 
@@ -183,19 +264,19 @@ print(json.dumps(payload, ensure_ascii=False, indent=2))
 PY
 }
 
-if ! run_step "stop running game before install" sts2_stop_running_games; then
+if ! run_step "stop running game before install" sts2_stop_running_games "$exe_path"; then
   failed=1
   failure_message="failed to stop running game before install"
-elif ! run_step "build mod" "$script_dir/build-mod.sh" --repo-root "$repo_root" --configuration "$configuration"; then
+elif ! run_step "build mod" "${build_mod_args[@]}"; then
   failed=1
   failure_message="build mod failed"
-elif ! run_step "mod load deep check" "$script_dir/test-mod-load.sh" --deep-check --api-port "$api_port"; then
+elif ! run_step "mod load deep check" "$script_dir/test-mod-load.sh" --deep-check --api-port "$api_port" "${runtime_start_args[@]}"; then
   failed=1
   failure_message="mod load deep check failed"
-elif ! run_step "debug console gating (disabled)" "$script_dir/test-debug-console-gating.sh" --api-port "$api_port"; then
+elif ! run_step "debug console gating (disabled)" "$script_dir/test-debug-console-gating.sh" --api-port "$api_port" "${runtime_start_args[@]}"; then
   failed=1
   failure_message="debug console gating (disabled) failed"
-elif ! run_step "debug console gating (enabled)" "$script_dir/test-debug-console-gating.sh" --enable-debug-actions --api-port "$api_port"; then
+elif ! run_step "debug console gating (enabled)" "$script_dir/test-debug-console-gating.sh" --enable-debug-actions --api-port "$api_port" "${runtime_start_args[@]}"; then
   failed=1
   failure_message="debug console gating (enabled) failed"
 elif ! run_step "mcp tool profile" "$script_dir/test-mcp-tool-profile.sh"; then
@@ -261,7 +342,7 @@ elif ! run_step "enemy intents payload" run_flow_script "test-enemy-intents-payl
 elif ! run_step "state invariants after enemy intents payload" run_flow_script "test-state-invariants.sh"; then
   failed=1
   failure_message="state invariants after enemy intents payload failed"
-elif ! run_step "multiplayer lobby flow" "$script_dir/test-multiplayer-lobby-flow.sh" --host-api-port "$api_port" --client-api-port "$((api_port + 1))"; then
+elif ! run_step "multiplayer lobby flow" "$script_dir/test-multiplayer-lobby-flow.sh" --host-api-port "$api_port" --client-api-port "$((api_port + 1))" "${runtime_start_args[@]}"; then
   failed=1
   failure_message="multiplayer lobby flow failed"
 elif ! run_step "start debug session for new-run lifecycle" restart_debug_session; then

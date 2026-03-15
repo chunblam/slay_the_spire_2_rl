@@ -15,12 +15,37 @@ delay_seconds=2
 enable_debug_actions=0
 api_port="${STS2_API_PORT:-8080}"
 keep_existing_processes=0
+skip_steam_app_id_file="${STS2_SKIP_STEAM_APP_ID_FILE:-0}"
 port_release_attempts="${STS2_PORT_RELEASE_ATTEMPTS:-10}"
 port_release_delay_seconds="${STS2_PORT_RELEASE_DELAY_SECONDS:-1}"
 pid=""
 start_succeeded=0
+steam_app_id_file=""
+steam_app_id_backup=""
+steam_app_id_original_exists=0
+steam_app_id_restore_needed=0
+
+restore_steam_app_id_file() {
+  if [[ "$steam_app_id_restore_needed" != "1" || -z "$steam_app_id_file" ]]; then
+    return 0
+  fi
+
+  if [[ "$steam_app_id_original_exists" == "1" && -n "$steam_app_id_backup" && -f "$steam_app_id_backup" ]]; then
+    cp -f "$steam_app_id_backup" "$steam_app_id_file"
+  else
+    rm -f "$steam_app_id_file"
+  fi
+
+  if [[ -n "$steam_app_id_backup" ]]; then
+    rm -f "$steam_app_id_backup"
+    steam_app_id_backup=""
+  fi
+
+  steam_app_id_restore_needed=0
+}
 
 cleanup() {
+  restore_steam_app_id_file
   if [[ "$start_succeeded" != "1" && -n "$pid" ]]; then
     sts2_stop_pid "$pid"
     sts2_wait_for_port_release "$api_port" "$port_release_attempts" "$port_release_delay_seconds" || true
@@ -32,6 +57,7 @@ trap cleanup EXIT
 usage() {
   cat <<'EOF'
 Usage: start-game-session.sh [--exe-path PATH] [--game-root PATH] [--app-manifest PATH] [--app-id ID] [--attempts N] [--delay-seconds N] [--enable-debug-actions] [--api-port PORT] [--keep-existing-processes]
+                            [--skip-steam-app-id-file]
 EOF
 }
 
@@ -73,6 +99,10 @@ while [[ $# -gt 0 ]]; do
       keep_existing_processes=1
       shift
       ;;
+    --skip-steam-app-id-file)
+      skip_steam_app_id_file=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -106,12 +136,28 @@ if [[ -z "$exe_path" || ! -x "$exe_path" ]]; then
   exit 1
 fi
 
-if [[ -z "$app_manifest_path" ]]; then
-  app_manifest_path="$(sts2_default_app_manifest)"
-fi
+if [[ "$skip_steam_app_id_file" != "1" ]]; then
+  if [[ -z "$app_manifest_path" ]]; then
+    app_manifest_path="$(sts2_default_app_manifest)"
+  fi
 
-resolved_app_id="$(sts2_resolve_app_id "$app_id" "$app_manifest_path")"
-sts2_ensure_steam_app_id_file "$exe_path" "$resolved_app_id"
+  resolved_app_id="$(sts2_resolve_app_id "$app_id" "$app_manifest_path")"
+  steam_app_id_file="$(sts2_steam_app_id_file_path "$exe_path")"
+
+  if [[ -f "$steam_app_id_file" ]]; then
+    current_app_id="$(tr -d '[:space:]' < "$steam_app_id_file")"
+    if [[ "$current_app_id" != "$resolved_app_id" ]]; then
+      steam_app_id_backup="$(mktemp)"
+      cp -f "$steam_app_id_file" "$steam_app_id_backup"
+      steam_app_id_original_exists=1
+      steam_app_id_restore_needed=1
+      sts2_ensure_steam_app_id_file "$exe_path" "$resolved_app_id"
+    fi
+  else
+    steam_app_id_restore_needed=1
+    sts2_ensure_steam_app_id_file "$exe_path" "$resolved_app_id"
+  fi
+fi
 
 base_url="http://127.0.0.1:$api_port"
 

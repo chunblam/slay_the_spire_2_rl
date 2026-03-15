@@ -15,11 +15,13 @@ attempts=15
 delay_seconds=2
 deep_check=0
 api_port="${STS2_API_PORT:-8080}"
+skip_steam_app_id_file="${STS2_SKIP_STEAM_APP_ID_FILE:-0}"
 pid=""
 
 usage() {
   cat <<'EOF'
 Usage: test-mod-load.sh [--exe-path PATH] [--game-root PATH] [--app-manifest PATH] [--app-id ID] [--attempts N] [--delay-seconds N] [--deep-check] [--api-port PORT]
+                         [--skip-steam-app-id-file]
 EOF
 }
 
@@ -65,6 +67,10 @@ while [[ $# -gt 0 ]]; do
       api_port="${2:-}"
       shift 2
       ;;
+    --skip-steam-app-id-file)
+      skip_steam_app_id_file=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -95,6 +101,9 @@ if [[ -n "$app_manifest_path" ]]; then
 fi
 if [[ -n "$app_id" ]]; then
   start_args+=(--app-id "$app_id")
+fi
+if [[ "$skip_steam_app_id_file" == "1" ]]; then
+  start_args+=(--skip-steam-app-id-file)
 fi
 
 session_json="$("${start_args[@]}")"
