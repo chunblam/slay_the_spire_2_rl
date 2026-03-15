@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Iterator
@@ -14,6 +15,7 @@ _DEFAULT_READ_TIMEOUT = 10.0
 _DEFAULT_ACTION_TIMEOUT = 30.0
 _DEFAULT_MAX_RETRIES = 2
 _RETRY_BACKOFF_BASE = 0.5
+_EVENT_WAIT_SLICE_SECONDS = 1.0
 
 
 @dataclass(slots=True)
@@ -143,6 +145,17 @@ class Sts2Client:
                 details={"reason": str(exc.reason), "path": "/events/stream"},
                 retryable=True,
             ) from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise Sts2ApiError(
+                status_code=0,
+                code="connection_error",
+                message=(
+                    f"Timed out while reading the STS2 mod event stream at {self._base_url}. "
+                    "The client will retry until the overall wait deadline expires."
+                ),
+                details={"reason": str(exc), "path": "/events/stream"},
+                retryable=True,
+            ) from exc
 
     def wait_for_event(
         self,
@@ -158,7 +171,9 @@ class Sts2Client:
             if remaining <= 0:
                 return None
 
-            read_timeout = min(max(remaining, 1.0), 30.0)
+            # Use short per-read time slices so heartbeat traffic cannot keep
+            # extending the overall deadline beyond the caller's timeout.
+            read_timeout = min(max(remaining, 0.05), _EVENT_WAIT_SLICE_SECONDS)
             try:
                 for event in self.iter_events(read_timeout=read_timeout):
                     event_name = str(event.get("event", ""))
@@ -166,8 +181,10 @@ class Sts2Client:
                         return event
                 return None
             except Sts2ApiError as exc:
-                if exc.code != "connection_error" or time.monotonic() >= deadline:
+                if exc.code != "connection_error":
                     raise
+                if time.monotonic() >= deadline:
+                    return None
 
     def end_turn(self) -> dict[str, Any]:
         return self.execute_action(
