@@ -1989,13 +1989,19 @@ def repo_root() -> Path:
 def run_start_game_session(*args: str) -> subprocess.CompletedProcess[str]:
     script_name = "start-game-session.sh"
     script_path = repo_root() / "scripts" / script_name
+    repo_dir = repo_root()
+    if not script_path.is_file():
+        raise ValidationError(f"Required script was not found: {script_path}")
     try:
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+        # Executes a fixed repo-local script with shell=False; caller data is passed as literal argv entries.
         completed = subprocess.run(
-            [str(script_path), *args],
+            ["./scripts/start-game-session.sh", *args],
             capture_output=True,
             text=True,
             check=False,
             shell=False,
+            cwd=str(repo_dir),
         )
     except OSError as exc:
         raise ValidationError(f"Failed to execute {script_name}: {exc}") from exc
