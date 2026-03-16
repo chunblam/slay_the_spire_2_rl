@@ -1986,7 +1986,8 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def run_repo_script(script_name: str, *args: str) -> subprocess.CompletedProcess[str]:
+def run_start_game_session(*args: str) -> subprocess.CompletedProcess[str]:
+    script_name = "start-game-session.sh"
     script_path = repo_root() / "scripts" / script_name
     try:
         completed = subprocess.run(
@@ -1994,6 +1995,7 @@ def run_repo_script(script_name: str, *args: str) -> subprocess.CompletedProcess
             capture_output=True,
             text=True,
             check=False,
+            shell=False,
         )
     except OSError as exc:
         raise ValidationError(f"Failed to execute {script_name}: {exc}") from exc
@@ -2060,7 +2062,7 @@ def start_debug_session(
         skip_steam_app_id_file=skip_steam_app_id_file,
     )
 
-    completed = run_repo_script("start-game-session.sh", *args)
+    completed = run_start_game_session(*args)
     stdout = completed.stdout.strip()
     if not stdout:
         raise ValidationError(f"start-game-session.sh returned no JSON payload for port {api_port}.")
