@@ -1,5 +1,7 @@
 # STS2 AI Agent
 
+https://github.com/user-attachments/assets/89353468-a299-4315-9516-e520bcbfbd4b
+
 中文版说明请见 [README.zh-CN.md](./README.zh-CN.md).
 
 `STS2 AI Agent` is a Slay the Spire 2 mod + MCP server bundle:
