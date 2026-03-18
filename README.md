@@ -7,6 +7,19 @@ https://github.com/user-attachments/assets/89353468-a299-4315-9516-e520bcbfbd4b
 - `STS2AIAgent`：把游戏状态和操作暴露为本地 HTTP API
 - `mcp_server`：把这套本地 API 包装成 MCP Server，方便接入支持 MCP 的 AI 客户端
 
+## `v0.5.2` 新增
+
+这次发布把新的 MCP 能力一起带上来了：
+
+- `guided` / `layered` / `full` 三种 tool profile
+- 游戏数据查询工具：`get_game_data_item`、`get_game_data_items`、`get_relevant_game_data`
+- 原始状态读取：`get_raw_game_state`
+- 主 / 副 Agent 交接：`create_planner_handoff`、`create_combat_handoff`、`complete_combat_handoff`
+- 运行时知识：`append_combat_knowledge`、`append_event_knowledge`、`complete_event_handoff`
+- 发布包内补齐了 `mcp_server/data` 和 `docs/game-knowledge`
+
+更细的工具说明在 [mcp_server/README.md](./mcp_server/README.md)，如果你要搭配 agent 工作流，优先看 [skills/sts2-mcp-player/SKILL.md](./skills/sts2-mcp-player/SKILL.md)。
+
 
 
 
@@ -113,7 +126,7 @@ http://127.0.0.1:8765/mcp
 
 ## 这个项目现在能做什么
 
-当前 `main` 分支提供的是一套可直接游玩的基础能力：
+当前 `main` 分支提供的是一套可直接游玩的基础能力，并且在 `v0.5.2` 增加了新的 MCP 数据与分层交接能力：
 
 - 读取游戏状态
 - 获取当前可执行动作

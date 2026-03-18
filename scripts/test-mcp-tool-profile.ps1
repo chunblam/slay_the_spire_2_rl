@@ -25,6 +25,7 @@ from sts2_mcp.server import create_server
 ESSENTIAL_TOOLS = {
     "health_check",
     "get_game_state",
+    "get_raw_game_state",
     "get_available_actions",
     "get_game_data_item",
     "get_game_data_items",

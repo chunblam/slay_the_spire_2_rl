@@ -1,7 +1,16 @@
 # 发布验收清单
 
-- 更新时间：`2026-03-11`
+- 更新时间：`2026-03-18`
+- 目标版本：`v0.5.2`
 - 目标：让这个 STS2 MCP Mod 达到“可正式发布、可完整使用、可稳定验证”的状态
+
+本次发布重点是把 `v0.5.2` 的 MCP 新能力一起带出去：
+
+- `guided` / `layered` / `full` tool profile
+- 游戏数据查询工具
+- 原始状态读取工具
+- 主 / 副 Agent handoff / knowledge
+- 打包资源补齐：`mcp_server/data`、`docs/game-knowledge`
 
 发布前必须同时满足静态门槛、安装门槛、MCP 可用性门槛，以及完整实机链路门槛。
 

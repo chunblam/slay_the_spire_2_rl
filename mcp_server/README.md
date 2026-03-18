@@ -8,7 +8,7 @@
 
 - `guided`
   - 默认 profile
-  - 只暴露 `health_check`、`get_game_state`、`get_available_actions`、`act`
+  - 只暴露 `health_check`、`get_game_state`、`get_raw_game_state`、`get_available_actions`、`act`、`get_game_data_item`、`get_game_data_items`、`get_relevant_game_data`、`wait_for_event`、`wait_until_actionable`
 - `layered`
   - 面向主 / 副 Agent 分层编排
   - 在 guided 基础上额外暴露：
@@ -30,6 +30,7 @@
 
 - `health_check`
 - `get_game_state`
+- `get_raw_game_state`
 - `get_available_actions`
 - `act`
 - `get_game_data_item`
