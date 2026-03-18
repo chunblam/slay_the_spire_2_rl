@@ -199,7 +199,7 @@ agent_knowledge/
 ## 本地启动
 
 ```powershell
-cd "C:/Users/chart/Documents/project/sp/mcp_server"
+cd "<repo-root>/mcp_server"
 uv sync
 uv run sts2-mcp-server
 ```
