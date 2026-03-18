@@ -410,10 +410,19 @@ def create_server(client: Sts2Client | None = None, tool_profile: str | None = N
     def _agent_state() -> dict[str, Any]:
         state = sts2.get_state()
         agent_view = state.get("agent_view")
-        return agent_view if isinstance(agent_view, dict) else state
+        if isinstance(agent_view, dict):
+            if "available_actions" not in agent_view and isinstance(agent_view.get("actions"), list):
+                return {
+                    **agent_view,
+                    "available_actions": agent_view["actions"],
+                }
+            return agent_view
+        return state
 
     def _is_actionable_state(state: dict[str, Any]) -> bool:
         actions = state.get("available_actions")
+        if not isinstance(actions, list):
+            actions = state.get("actions")
         return isinstance(actions, list) and len(actions) > 0
 
     def _wait_until_actionable_impl(

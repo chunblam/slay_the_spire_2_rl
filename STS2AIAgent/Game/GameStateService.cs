@@ -1905,6 +1905,7 @@ internal static class GameStateService
             session,
             turn,
             actions = availableActions,
+            available_actions = availableActions,
             combat = BuildAgentCombatPayload(combatState, combat, glossaryTerms),
             run = BuildAgentRunPayload(combatState, runState, run, glossaryTerms),
             map = BuildAgentMapPayload(map),
@@ -2525,7 +2526,17 @@ internal static class GameStateService
 
     private static CardModel[] ExtractCards(object? value)
     {
+        return ExtractCards(value, new HashSet<object>(ReferenceEqualityComparer.Instance));
+    }
+
+    private static CardModel[] ExtractCards(object? value, HashSet<object> visited)
+    {
         if (value == null)
+        {
+            return Array.Empty<CardModel>();
+        }
+
+        if (!visited.Add(value))
         {
             return Array.Empty<CardModel>();
         }
@@ -2550,12 +2561,12 @@ internal static class GameStateService
         foreach (var memberName in new[] { "Cards", "CardModels", "Entries", "List" })
         {
             var nested = TryGetMemberValue(value, memberName);
-            if (nested == null || ReferenceEquals(nested, value))
+            if (nested == null)
             {
                 continue;
             }
 
-            var cards = ExtractCards(nested);
+            var cards = ExtractCards(nested, visited);
             if (cards.Length > 0)
             {
                 return cards;

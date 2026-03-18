@@ -87,6 +87,21 @@ class GameDataToolsTests(unittest.TestCase):
         self.assertEqual(result["error"]["type"], "unknown_collection")
         self.assertEqual(result["error"]["collection"], "unknown")
 
+    def test_get_game_data_item_returns_structured_error_for_unknown_collection(self) -> None:
+        client = DummyClient()
+        server = create_server(client=client)
+        tool = asyncio.run(server.get_tool("get_game_data_item"))
+
+        with patch(
+            "sts2_mcp.server._ensure_game_data_index",
+            side_effect=KeyError("Unknown game data collection: unknown"),
+        ):
+            result = tool.fn(collection="unknown", item_id="ABRASIVE")
+
+        self.assertIn("error", result)
+        self.assertEqual(result["error"]["type"], "unknown_collection")
+        self.assertEqual(result["error"]["collection"], "unknown")
+
     def test_get_relevant_game_data_uses_scene_fields_for_combat(self) -> None:
         client = DummyClient(screen="COMBAT_REWARD")
         server = create_server(client=client)

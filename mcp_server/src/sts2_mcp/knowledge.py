@@ -10,7 +10,16 @@ from typing import Any
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    configured = os.getenv("STS2_AGENT_REPO_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "mcp_server" / "pyproject.toml").is_file():
+            return parent
+
+    return current.parents[3]
 
 
 def _default_knowledge_root() -> Path:
