@@ -11,6 +11,9 @@
 - `health_check`
 - `get_game_state`
 - `get_available_actions`
+- `get_game_data_item`
+- `get_game_data_items`
+- `get_relevant_game_data`
 - `wait_for_event`
 - `wait_until_actionable`
 

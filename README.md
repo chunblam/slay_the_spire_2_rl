@@ -269,3 +269,9 @@ http://127.0.0.1:8765/mcp
 - `STS2AIAgent/`：游戏 Mod 源码
 - `mcp_server/`：MCP Server 源码
 - `scripts/`：构建、验证和启动脚本
+
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0 only (AGPL-3.0-only).
+
+If you modify this project and distribute it, or run it as a network service, you must provide the complete corresponding source code under the same license.

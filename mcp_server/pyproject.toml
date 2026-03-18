@@ -1,6 +1,6 @@
 [project]
 name = "sts2-ai-agent-mcp"
-version = "0.4.0"
+version = "0.5.0"
 description = "FastMCP wrapper for the local STS2 AI Agent mod"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,6 +18,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sts2_mcp"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"data/eng" = "data/eng"
+
+[tool.hatch.build.targets.sdist.force-include]
+"data/eng" = "data/eng"
 
 [tool.uv]
 package = true
