@@ -1,0 +1,551 @@
+"""
+src/llm/llm_advisor.py  (更新版)
+
+核心改动：
+1. _retrieve_card_context()  —— 从 knowledge_base["cards"] 精确查找
+   候选牌 + 当前牌组牌的数据，送入 prompt，替代单纯靠攻略段落
+2. evaluate_card_reward()    —— prompt 里携带 Codex 级别的卡牌效果数据
+3. _query_llm()              —— 用卡级检索上下文 + 流派段落双层 context
+4. get_advice()              —— 增加 screen 感知，CARD_REWARD 时强制刷新
+
+支持后端: openai / ollama / anthropic
+"""
+
+import json
+import os
+import re
+import time
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
+import requests
+
+
+# ─── 数据类 ────────────────────────────────────────────────────────────────────
+
+@dataclass
+class LLMAdvice:
+    deck_route: str              # 推荐路线: aggro / defense / poison / infinite / ...
+    route_score: float           # 路线清晰度 [0, 1]
+    key_synergies: List[str]     # 当前卡组中的关键协同
+    reward_shaping: float        # 奖励塑形分 [-1, +1]
+    reasoning: str               # 推理文字（调试用）
+    # 新增：记录上次对选牌的具体推荐（供 RewardShaper 比对 agent 决策）
+    card_recommendation: int = -99   # -99=未评估, -1=建议跳过, 0..n=推荐索引
+    card_confidence: float = 0.0     # 推荐置信度 [0, 1]，低于阈值不加塑形
+
+
+# ─── LLM 后端封装 ──────────────────────────────────────────────────────────────
+
+class LLMBackend:
+    def __init__(self, backend: str = "openai", model: str = "gpt-4o-mini", api_key: str = ""):
+        self.backend = backend
+        self.model = model
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
+
+    def call(self, system_prompt: str, user_prompt: str, max_tokens: int = 512) -> str:
+        if self.backend == "openai":
+            return self._call_openai(system_prompt, user_prompt, max_tokens)
+        elif self.backend == "ollama":
+            return self._call_ollama(system_prompt, user_prompt, max_tokens)
+        elif self.backend == "anthropic":
+            return self._call_anthropic(system_prompt, user_prompt, max_tokens)
+        else:
+            raise ValueError(f"不支持的后端: {self.backend}")
+
+    def _call_openai(self, system: str, user: str, max_tokens: int) -> str:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        }
+        resp = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=headers, json=payload, timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+
+    def _call_ollama(self, system: str, user: str, max_tokens: int) -> str:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "options": {"num_predict": max_tokens, "temperature": 0.3},
+        }
+        resp = requests.post("http://localhost:11434/api/chat", json=payload, timeout=60)
+        resp.raise_for_status()
+        return resp.json()["message"]["content"]
+
+    def _call_anthropic(self, system: str, user: str, max_tokens: int) -> str:
+        headers = {
+            "x-api-key": self.api_key or os.getenv("ANTHROPIC_API_KEY", ""),
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers=headers, json=payload, timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["content"][0]["text"]
+
+
+# ─── JSON 解析工具 ─────────────────────────────────────────────────────────────
+
+def _parse_json_response(text: str) -> Dict:
+    """从 LLM 输出里健壮地提取 JSON，兼容 ```json 包裹和多余文字"""
+    text = text.strip()
+    # 去掉 markdown 代码块
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+    # 找第一个 { ... } 块
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        return json.loads(m.group())
+    return json.loads(text)
+
+
+# ─── 主模块 ────────────────────────────────────────────────────────────────────
+
+class LLMAdvisor:
+    """
+    LLM 策略顾问
+
+    调用时机：
+    1. CARD_REWARD 屏幕前（evaluate_card_reward，强制刷新）
+    2. 每 call_interval 步的全局评估（get_advice，有缓存）
+    3. 地图选择前（get_advice）
+
+    知识检索层次（新）：
+    Layer-1: Codex 卡级数据 — 候选牌 + 牌组重叠牌的费用/效果/稀有度
+    Layer-2: synergies 表  — 人工标注的 combo 条目
+    Layer-3: strategies 段 — 角色流派攻略文字
+    """
+
+    # ── System prompts ──────────────────────────────────────────────────────
+
+    SYSTEM_PROMPT_GLOBAL = """你是杀戮尖塔2的顶级策略专家。
+分析玩家当前状态，评估牌组路线质量，必须只返回 JSON，不要有任何其他文字。
+输出格式（所有字段必填）:
+{
+  "deck_route": "路线名称",
+  "route_score": 0.0到1.0,
+  "key_synergies": ["协同1", "协同2"],
+  "reward_shaping": -1.0到1.0,
+  "reasoning": "简短推理（50字以内）"
+}
+路线选项: aggro | defense | poison | infinite | strength | exhaust | relic_synergy | mixed
+reward_shaping 规则:
+  +1.0: 路线极清晰，关键牌全到位
+  +0.5: 路线成形，有明显协同
+   0.0: 一般，无明显路线
+  -0.5: 混乱，路线冲突
+  -1.0: 明显错误选择"""
+
+    SYSTEM_PROMPT_CARD_EVAL = """你是杀戮尖塔2的顶级策略专家，专注于牌组构筑。
+分析奖励卡选择，结合当前牌组和参考资料，给出最优选择。
+必须只返回 JSON，不要有任何其他文字。
+输出格式（所有字段必填）:
+{
+  "recommended_index": 整数（0开始，-1表示跳过），
+  "confidence": 0.0到1.0（推荐置信度），
+  "reasoning": "推荐理由（100字以内）",
+  "deck_route_after": "选择后牌组路线名称",
+  "key_combo": "该牌与已有牌/遗物形成的关键配合（若有，否则空字符串）"
+}
+注意:
+- confidence < 0.5 表示不确定，不应用奖励塑形
+- 若候选牌均与当前路线无关，建议跳过（-1）而非随便拿一张"""
+
+    def __init__(
+        self,
+        llm_backend: LLMBackend,
+        knowledge_base_path: str = "data/knowledge_base.json",
+        call_interval_steps: int = 10,
+        cache_ttl: float = 30.0,
+        card_shaping_confidence_threshold: float = 0.55,
+    ):
+        self.llm = llm_backend
+        self.call_interval = call_interval_steps
+        self.cache_ttl = cache_ttl
+        self.confidence_threshold = card_shaping_confidence_threshold
+        self._last_call_time: float = 0.0
+        self._last_advice: Optional[LLMAdvice] = None
+        self._step_counter: int = 0
+
+        self.knowledge_base = self._load_knowledge_base(knowledge_base_path)
+        _cards = self.knowledge_base.get("cards", {})
+        print(f"[LLMAdvisor] 知识库已加载 — "
+              f"cards:{len(_cards)}  "
+              f"relics:{len(self.knowledge_base.get('relics', {}))}  "
+              f"synergies:{len(self.knowledge_base.get('synergies', []))}  "
+              f"strategies:{len(self.knowledge_base.get('strategies', []))}")
+
+    # ── 公开接口 ────────────────────────────────────────────────────────────
+
+    def get_advice(self, state: Dict, force: bool = False) -> Optional[LLMAdvice]:
+        """
+        获取全局路线评估（带缓存）。
+        CARD_REWARD 屏幕时内部会自动 force=True，以便即时刷新。
+        """
+        self._step_counter += 1
+        now = time.time()
+        screen = state.get("screen_type", "")
+
+        # CARD_REWARD 一定强制刷新
+        if screen == "CARD_REWARD":
+            force = True
+
+        if not force and (
+            self._step_counter % self.call_interval != 0
+            or now - self._last_call_time < self.cache_ttl
+        ):
+            return self._last_advice
+
+        try:
+            advice = self._query_llm_global(state)
+            self._last_advice = advice
+            self._last_call_time = now
+            return advice
+        except Exception as e:
+            print(f"[LLMAdvisor] get_advice 调用失败: {e}")
+            return self._last_advice
+
+    def evaluate_card_reward(
+        self,
+        state: Dict,
+        reward_cards: List[Dict],
+    ) -> Tuple[int, float, str]:
+        """
+        评估奖励卡，返回 (recommended_index, confidence, reasoning)
+
+        - recommended_index: -1=跳过, 0..n=推荐索引
+        - confidence: [0,1]，低于阈值时 RewardShaper 不应用 match bonus
+        - reasoning: 推理文字（供日志/调试）
+        """
+        if not reward_cards:
+            return -1, 0.0, "无奖励卡"
+
+        deck = state.get("deck", [])
+        relics = state.get("relics", [])
+        character = state.get("character", {}).get("name", "Unknown")
+        floor = state.get("floor", 0)
+        hp = state.get("combat", {}).get("player", {}).get("hp", "?")
+        max_hp = state.get("combat", {}).get("player", {}).get("max_hp", "?")
+
+        # ── Layer-1: Codex 卡级检索 ────────────────────────────────────────
+        candidate_context = self._retrieve_card_context(reward_cards, deck)
+
+        # ── Layer-2: synergies ──────────────────────────────────────────────
+        synergy_context = self._retrieve_synergies(reward_cards, deck)
+
+        # ── Layer-3: 流派策略 ───────────────────────────────────────────────
+        strategy_context = self._retrieve_strategy(character)
+
+        deck_summary = self._summarize_deck(deck)
+        relic_names = [r.get("name", "?") for r in relics[:12]]
+
+        user_prompt = (
+            f"=== 游戏状态 ===\n"
+            f"角色: {character} | 楼层: {floor} | HP: {hp}/{max_hp}\n"
+            f"遗物: {relic_names}\n\n"
+            f"=== 当前牌组 ===\n{deck_summary}\n\n"
+            f"=== 奖励卡选项（含 Codex 数据）===\n{candidate_context}\n\n"
+            f"=== 已知协同 ===\n{synergy_context}\n\n"
+            f"=== 角色流派参考 ===\n{strategy_context}\n\n"
+            f"请选出最优奖励卡（或跳过），返回 JSON。"
+        )
+
+        try:
+            resp = self.llm.call(self.SYSTEM_PROMPT_CARD_EVAL, user_prompt, max_tokens=400)
+            data = _parse_json_response(resp)
+
+            idx = int(data.get("recommended_index", 0))
+            conf = float(data.get("confidence", 0.5))
+            reason = data.get("reasoning", "")
+
+            # 边界检查
+            if idx >= len(reward_cards):
+                idx = 0
+            if idx < -1:
+                idx = -1
+
+            # 同步更新 _last_advice 里的 card 字段
+            if self._last_advice is not None:
+                self._last_advice.card_recommendation = idx
+                self._last_advice.card_confidence = conf
+            else:
+                self._last_advice = LLMAdvice(
+                    deck_route="mixed", route_score=0.5, key_synergies=[],
+                    reward_shaping=0.0, reasoning="card_eval_only",
+                    card_recommendation=idx, card_confidence=conf,
+                )
+
+            print(f"[LLMAdvisor] 选牌推荐: idx={idx} conf={conf:.2f} | {reason[:60]}")
+            return idx, conf, reason
+
+        except Exception as e:
+            print(f"[LLMAdvisor] evaluate_card_reward 失败: {e}")
+            if self._last_advice is not None:
+                self._last_advice.card_recommendation = -99
+                self._last_advice.card_confidence = 0.0
+            return -1, 0.0, f"LLM 调用失败: {e}"
+
+    def get_reward_shaping_bonus(self, state: Dict) -> float:
+        """全局路线质量的奖励塑形分 — 供 RewardShaper 在非 CARD_REWARD 时用"""
+        advice = self.get_advice(state)
+        if advice is None:
+            return 0.0
+        return advice.reward_shaping * 0.5
+
+    def get_last_card_recommendation(self) -> Tuple[int, float]:
+        """供 RewardShaper 读取上次选牌推荐的 (index, confidence)"""
+        if self._last_advice is None or self._last_advice.card_recommendation == -99:
+            return -99, 0.0
+        return self._last_advice.card_recommendation, self._last_advice.card_confidence
+
+    def invalidate_card_recommendation(self):
+        """选牌动作执行后调用，重置缓存避免重复塑形"""
+        if self._last_advice is not None:
+            self._last_advice.card_recommendation = -99
+            self._last_advice.card_confidence = 0.0
+
+    # ── 内部：全局路线评估 ──────────────────────────────────────────────────
+
+    def _query_llm_global(self, state: Dict) -> LLMAdvice:
+        deck = state.get("deck", [])
+        relics = state.get("relics", [])
+        combat = state.get("combat", {})
+        character = state.get("character", {}).get("name", "Unknown")
+        floor = state.get("floor", 0)
+
+        # 用当前牌组里高频牌做 Codex 检索（给全局评估用）
+        deck_card_ctx = self._retrieve_deck_card_context(deck, max_cards=6)
+        synergy_ctx = self._retrieve_synergies([], deck, deck_only=True)
+        strategy_ctx = self._retrieve_strategy(character)
+
+        user_prompt = (
+            f"=== 当前游戏状态 ===\n"
+            f"角色: {character} | 楼层: {floor}\n"
+            f"HP: {combat.get('player', {}).get('hp', '?')}"
+            f"/{combat.get('player', {}).get('max_hp', '?')}\n"
+            f"金币: {state.get('gold', 0)}\n"
+            f"遗物: {[r.get('name', '?') for r in relics[:12]]}\n\n"
+            f"=== 当前牌组 ===\n{self._summarize_deck(deck)}\n\n"
+            f"=== 牌组关键牌 Codex 数据 ===\n{deck_card_ctx}\n\n"
+            f"=== 已知协同 ===\n{synergy_ctx}\n\n"
+            f"=== 流派参考 ===\n{strategy_ctx}\n\n"
+            f"请评估当前牌组路线质量，返回 JSON。"
+        )
+
+        resp_text = self.llm.call(self.SYSTEM_PROMPT_GLOBAL, user_prompt, max_tokens=512)
+        data = _parse_json_response(resp_text)
+
+        return LLMAdvice(
+            deck_route=data.get("deck_route", "mixed"),
+            route_score=float(data.get("route_score", 0.5)),
+            key_synergies=data.get("key_synergies", []),
+            reward_shaping=float(data.get("reward_shaping", 0.0)),
+            reasoning=data.get("reasoning", ""),
+        )
+
+    # ── 内部：Codex 检索 ────────────────────────────────────────────────────
+
+    def _retrieve_card_context(
+        self,
+        reward_cards: List[Dict],
+        deck: List[Dict],
+        max_deck_sample: int = 6,
+    ) -> str:
+        """
+        Layer-1 Codex 检索：
+        - 对每张候选奖励卡，从 knowledge_base["cards"] 取完整 Codex 数据
+        - 从牌组里随机采样若干牌的 Codex 数据作为"牌组上下文"
+        返回格式化的字符串供 prompt 使用
+        """
+        cards_db = self.knowledge_base.get("cards", {})
+        lines = ["【候选奖励卡（Codex 数据）】"]
+
+        for i, card in enumerate(reward_cards):
+            card_name = card.get("name", "") or card.get("id", "")
+            codex = self._lookup_card(card_name, cards_db)
+            if codex:
+                lines.append(
+                    f"  [{i}] {codex.get('name', card_name)}"
+                    f" | 类型:{codex.get('type','?')}"
+                    f" | 费用:{codex.get('cost','?')}"
+                    f" | 稀有:{codex.get('rarity','?')}"
+                    f" | 效果: {self._trim(codex.get('description', ''), 80)}"
+                )
+            else:
+                # Codex 未命中，用 Mod 状态里的信息兜底
+                lines.append(
+                    f"  [{i}] {card_name}"
+                    f" | 类型:{card.get('type','?')}"
+                    f" | 费用:{card.get('cost','?')}"
+                    f" | 效果: {self._trim(card.get('description', ''), 80)}"
+                )
+
+        # 牌组采样
+        if deck:
+            import random
+            sample = deck[:max_deck_sample]  # 取前 N 张（已按顺序排列）
+            lines.append("\n【牌组采样（Codex 数据，供对比参考）】")
+            for card in sample:
+                card_name = card.get("name", "") or card.get("id", "")
+                codex = self._lookup_card(card_name, cards_db)
+                upg = "+" if card.get("upgraded") else ""
+                if codex:
+                    lines.append(
+                        f"  {codex.get('name', card_name)}{upg}"
+                        f" | {codex.get('type','?')}"
+                        f" | 费用:{codex.get('cost','?')}"
+                        f" | {self._trim(codex.get('description', ''), 60)}"
+                    )
+                else:
+                    lines.append(f"  {card_name}{upg} | {card.get('type','?')}")
+
+        return "\n".join(lines)
+
+    def _retrieve_deck_card_context(self, deck: List[Dict], max_cards: int = 6) -> str:
+        """全局评估用：取牌组前 N 张的 Codex 数据"""
+        if not deck:
+            return "（牌组为空）"
+        cards_db = self.knowledge_base.get("cards", {})
+        lines = []
+        for card in deck[:max_cards]:
+            card_name = card.get("name", "") or card.get("id", "")
+            codex = self._lookup_card(card_name, cards_db)
+            upg = "+" if card.get("upgraded") else ""
+            if codex:
+                lines.append(
+                    f"  {codex.get('name', card_name)}{upg}"
+                    f" | {codex.get('type','?')} | 费用:{codex.get('cost','?')}"
+                    f" | {self._trim(codex.get('description', ''), 60)}"
+                )
+            else:
+                lines.append(f"  {card_name}{upg}")
+        return "\n".join(lines) if lines else "（Codex 无匹配）"
+
+    def _lookup_card(self, name_or_id: str, cards_db: Dict) -> Optional[Dict]:
+        """
+        从 Codex cards 字典里匹配一张卡。
+        先精确匹配 id，再精确匹配 name，最后做不区分大小写的 name 模糊匹配。
+        """
+        if not name_or_id or not cards_db:
+            return None
+        # 1. id 精确
+        if name_or_id in cards_db:
+            return cards_db[name_or_id]
+        # 2. name 精确
+        for v in cards_db.values():
+            if v.get("name", "") == name_or_id:
+                return v
+        # 3. 忽略大小写 + 去掉升级符号
+        name_lower = name_or_id.lower().rstrip("+")
+        for v in cards_db.values():
+            if v.get("name", "").lower() == name_lower:
+                return v
+        return None
+
+    def _retrieve_synergies(
+        self,
+        reward_cards: List[Dict],
+        deck: List[Dict],
+        deck_only: bool = False,
+    ) -> str:
+        """
+        Layer-2：从 knowledge_base["synergies"] 里找与候选牌 / 牌组有交集的条目。
+        deck_only=True 时只检索牌组内部的协同。
+        """
+        synergies = self.knowledge_base.get("synergies", [])
+        if not synergies:
+            return "（无协同数据）"
+
+        candidate_names = set(
+            (c.get("name", "") or c.get("id", "")).lower()
+            for c in (reward_cards if not deck_only else [])
+        )
+        deck_names = set(
+            (c.get("name", "") or c.get("id", "")).lower()
+            for c in deck
+        )
+        all_names = candidate_names | deck_names
+
+        matched = []
+        for entry in synergies:
+            entry_cards = {s.lower() for s in entry.get("cards", [])}
+            # 只要有 2 张以上交集就算命中
+            if len(entry_cards & all_names) >= 2:
+                matched.append(entry.get("description", ""))
+            if len(matched) >= 3:
+                break
+
+        return "\n".join(f"  • {m}" for m in matched) if matched else "（无匹配协同）"
+
+    def _retrieve_strategy(self, character: str) -> str:
+        """Layer-3：流派攻略段落（角色匹配 + all）"""
+        strategies = self.knowledge_base.get("strategies", [])
+        if not strategies:
+            return "（无攻略数据）"
+        char_lower = character.lower()
+        matched = []
+        for entry in strategies:
+            ec = entry.get("character", "").lower()
+            if ec == "all" or ec == char_lower:
+                matched.append(entry.get("text", ""))
+            if len(matched) >= 3:
+                break
+        return "\n".join(f"  {m}" for m in matched) if matched else "（无匹配攻略）"
+
+    # ── 内部：格式化工具 ────────────────────────────────────────────────────
+
+    def _summarize_deck(self, deck: List[Dict]) -> str:
+        if not deck:
+            return "  （空牌组）"
+        by_type: Dict[str, List[str]] = {}
+        for card in deck:
+            t = card.get("type", "OTHER")
+            name = card.get("name", "?")
+            if card.get("upgraded"):
+                name += "+"
+            by_type.setdefault(t, []).append(name)
+        lines = [f"  {t}({len(ns)}张): {', '.join(ns)}" for t, ns in by_type.items()]
+        lines.insert(0, f"  总计 {len(deck)} 张")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _trim(text: str, max_len: int) -> str:
+        if not text:
+            return ""
+        text = text.replace("\n", " ").strip()
+        return text[:max_len] + "…" if len(text) > max_len else text
+
+    def _load_knowledge_base(self, path: str) -> Dict:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print(f"[LLMAdvisor] 知识库未找到: {path}，使用空知识库")
+            return {"cards": {}, "relics": {}, "strategies": [], "synergies": []}
+        except json.JSONDecodeError as e:
+            print(f"[LLMAdvisor] 知识库 JSON 解析失败: {e}，使用空知识库")
+            return {"cards": {}, "relics": {}, "strategies": [], "synergies": []}

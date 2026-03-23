@@ -1,0 +1,76 @@
+# configs/ppo_default.yaml  (更新版)
+# STS2 RL Agent 默认训练配置
+
+device: "auto"   # "cpu" | "cuda" | "auto"
+
+# ── 环境 ──────────────────────────────────────────────────────────────────────
+env:
+  host: "localhost"
+  port: 15526
+  api_mode: "singleplayer"   # singleplayer | multiplayer
+  num_actions: 16
+
+# ── 模型 ──────────────────────────────────────────────────────────────────────
+model:
+  hidden_dim: 256
+  card_d_model: 64
+  monster_d_model: 32
+
+# ── 训练超参数 ─────────────────────────────────────────────────────────────────
+train:
+  total_steps: 2_000_000
+  buffer_size: 2048
+  n_epochs: 4
+  batch_size: 64
+  lr: 3.0e-4
+  clip_eps: 0.2
+  value_loss_coef: 0.5
+  entropy_coef: 0.01
+  gamma: 0.99
+  gae_lambda: 0.95
+  save_interval: 100_000
+
+# ── LLM Advisor ───────────────────────────────────────────────────────────────
+llm:
+  enabled: false             # 设为 true 开启
+
+  # ── 后端选择（取消注释其中一组）──────────────────────────────────────────
+  # 选项 A: 本地 Ollama（推荐，免费）
+  backend: "ollama"
+  model: "qwen2.5:7b"        # 替代: "llama3.2:3b"（更快但效果弱）
+  api_key: ""
+
+  # 选项 B: OpenAI
+  # backend: "openai"
+  # model: "gpt-4o-mini"
+  # api_key: "sk-..."
+
+  # 选项 C: Anthropic
+  # backend: "anthropic"
+  # model: "claude-haiku-4-5-20251001"
+  # api_key: "..."
+
+  knowledge_base_path: "data/knowledge_base.json"
+
+  # LLM 调用频率控制
+  call_interval_steps: 10    # 每 N 步全局评估一次
+  cache_ttl: 30.0            # 同一建议最长复用秒数
+
+  # 选牌 match 奖励的置信度阈值
+  # 低于此值时，LLM 不确定，不加 match bonus / penalty
+  confidence_threshold: 0.55
+
+# ── 奖励塑形权重 ───────────────────────────────────────────────────────────────
+reward:
+  rule_weight: 0.5           # 规则奖励权重（始终启用）
+  llm_weight: 0.3            # 全局路线评估奖励权重（llm.enabled=true 时生效）
+
+  # 选牌 match 奖励（新增，llm.enabled=true 时生效）
+  card_weight: 0.4           # match bonus 的缩放系数
+  card_match_bonus: 1.0      # agent 与 LLM 推荐一致时的原始 bonus
+  card_mismatch_penalty: 0.5 # 高置信度下不一致时的惩罚
+  # 建议: card_mismatch_penalty < card_match_bonus，避免惩罚过大压制探索
+
+# ── 其他 ──────────────────────────────────────────────────────────────────────
+checkpoint_dir: "checkpoints"
+render: false

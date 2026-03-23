@@ -1,0 +1,12 @@
+# STS2-RL-Agent — Python 3.10+
+# 安装：在项目根目录、已激活的虚拟环境中执行
+#   pip install -r requirements.txt
+#
+# NVIDIA GPU：若需要 CUDA 版 PyTorch，建议先访问 https://pytorch.org/get-started/locally/
+# 按说明安装 torch（再装本文件其余依赖），或在本文件安装完成后用官网命令覆盖升级 torch。
+
+torch>=2.0.0
+gymnasium>=0.29.0
+numpy>=1.24.0,<3.0.0
+requests>=2.28.0
+PyYAML>=6.0
