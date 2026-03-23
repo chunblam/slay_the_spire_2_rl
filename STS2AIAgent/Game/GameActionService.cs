@@ -52,8 +52,10 @@ internal static class GameActionService
     public static Task<ActionResponsePayload> ExecuteAsync(ActionRequest request)
     {
         var actionName = request.action?.Trim().ToLowerInvariant();
+        var canonicalActionName = ResolveCanonicalActionName(actionName);
+        ValidateActionGate(canonicalActionName);
 
-        return actionName switch
+        return canonicalActionName switch
         {
             "end_turn" => ExecuteEndTurnAsync(),
             "play_card" => ExecutePlayCardAsync(request),
@@ -103,6 +105,81 @@ internal static class GameActionService
                 action = request.action
             })
         };
+    }
+
+    private static string? ResolveCanonicalActionName(string? actionName)
+    {
+        if (actionName == "menu_confirm")
+        {
+            var legalActions = GameStateService.BuildSessionLegalActionsPayload().actions;
+            if (Array.IndexOf(legalActions, "embark") >= 0)
+            {
+                return "embark";
+            }
+
+            if (Array.IndexOf(legalActions, "confirm_modal") >= 0)
+            {
+                return "confirm_modal";
+            }
+        }
+
+        if (actionName == "menu_back")
+        {
+            var legalActions = GameStateService.BuildSessionLegalActionsPayload().actions;
+            if (Array.IndexOf(legalActions, "close_main_menu_submenu") >= 0)
+            {
+                return "close_main_menu_submenu";
+            }
+
+            if (Array.IndexOf(legalActions, "dismiss_modal") >= 0)
+            {
+                return "dismiss_modal";
+            }
+        }
+
+        return actionName switch
+        {
+            "menu_continue" => "continue_run",
+            "menu_new_run" => "open_character_select",
+            "menu_choose_character" => "select_character",
+            "menu_confirm" => "embark",
+            "menu_back" => "close_main_menu_submenu",
+            "menu_return" => "return_to_main_menu",
+            _ => actionName
+        };
+    }
+
+    private static void ValidateActionGate(string? actionName)
+    {
+        if (string.IsNullOrWhiteSpace(actionName))
+        {
+            throw new ApiException(400, "invalid_request", "Request body must contain an action field.");
+        }
+
+        if (CanBypassActionGate(actionName))
+        {
+            return;
+        }
+
+        var gate = GameStateService.BuildSessionActionGatePayload();
+        if (gate.can_act)
+        {
+            return;
+        }
+
+        var legalActions = GameStateService.BuildSessionLegalActionsPayload().actions;
+        throw new ApiException(409, "invalid_action", "Action is blocked in the current state.", new
+        {
+            action = actionName,
+            can_act = false,
+            reason = gate.block_reason ?? "transition",
+            legal_actions = legalActions
+        }, retryable: true);
+    }
+
+    private static bool CanBypassActionGate(string actionName)
+    {
+        return actionName is "close_main_menu_submenu" or "dismiss_modal" or "return_to_main_menu" or "confirm_modal";
     }
 
     private static async Task<ActionResponsePayload> ExecuteEndTurnAsync()

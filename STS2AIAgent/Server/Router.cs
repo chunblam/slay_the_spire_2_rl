@@ -12,7 +12,7 @@ namespace STS2AIAgent.Server;
 internal static class Router
 {
     private const string ServiceName = "sts2-ai-agent";
-    private const string ProtocolVersion = "2026-03-11-v1";
+    private const string ProtocolVersion = "2026-03-23-v2";
 private const string ModVersion = "0.5.2";
     private const string LogPrefix = "[STS2AIAgent.Router]";
 
@@ -66,9 +66,37 @@ private const string ModVersion = "0.5.2";
             }
 
             if (request.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase) &&
+                request.Url?.AbsolutePath == "/api/v1/session/state")
+            {
+                var state = await GameThread.InvokeAsync(GameStateService.BuildSessionStatePayload);
+                await WriteJsonAsync(response, 200, new
+                {
+                    ok = true,
+                    request_id = requestId,
+                    data = state
+                });
+                statusCode = 200;
+                return;
+            }
+
+            if (request.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase) &&
                 request.Url?.AbsolutePath == "/actions/available")
             {
                 var payload = await GameThread.InvokeAsync(GameStateService.BuildAvailableActionsPayload);
+                await WriteJsonAsync(response, 200, new
+                {
+                    ok = true,
+                    request_id = requestId,
+                    data = payload
+                });
+                statusCode = 200;
+                return;
+            }
+
+            if (request.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase) &&
+                request.Url?.AbsolutePath == "/api/v1/session/legal_actions")
+            {
+                var payload = await GameThread.InvokeAsync(GameStateService.BuildSessionLegalActionsPayload);
                 await WriteJsonAsync(response, 200, new
                 {
                     ok = true,
@@ -89,20 +117,42 @@ private const string ModVersion = "0.5.2";
             if (request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) &&
                 request.Url?.AbsolutePath == "/action")
             {
-                var actionRequest = await JsonHelper.DeserializeAsync<ActionRequest>(request.InputStream, cancellationToken);
-                if (actionRequest?.action == null)
-                {
-                    throw new ApiException(400, "invalid_request", "Request body must contain an action field.");
-                }
+                statusCode = await HandleActionRequestAsync(request, response, requestId, cancellationToken);
+                return;
+            }
 
-                var actionResponse = await GameThread.InvokeAsync(() => GameActionService.ExecuteAsync(actionRequest));
-                await WriteJsonAsync(response, 200, new
-                {
-                    ok = true,
-                    request_id = requestId,
-                    data = actionResponse
-                });
-                statusCode = 200;
+            if (request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) &&
+                request.Url?.AbsolutePath == "/api/v1/session/action")
+            {
+                statusCode = await HandleActionRequestAsync(request, response, requestId, cancellationToken);
+                return;
+            }
+
+            if (request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) &&
+                request.Url?.AbsolutePath == "/api/v1/session/new_run")
+            {
+                statusCode = await HandleActionAliasAsync("menu_new_run", request, response, requestId, cancellationToken);
+                return;
+            }
+
+            if (request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) &&
+                request.Url?.AbsolutePath == "/api/v1/session/choose_character")
+            {
+                statusCode = await HandleActionAliasAsync("menu_choose_character", request, response, requestId, cancellationToken);
+                return;
+            }
+
+            if (request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) &&
+                request.Url?.AbsolutePath == "/api/v1/session/confirm")
+            {
+                statusCode = await HandleActionAliasAsync("menu_confirm", request, response, requestId, cancellationToken);
+                return;
+            }
+
+            if (request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase) &&
+                request.Url?.AbsolutePath == "/api/v1/session/return_to_menu")
+            {
+                statusCode = await HandleActionAliasAsync("menu_return", request, response, requestId, cancellationToken);
                 return;
             }
 
@@ -161,6 +211,58 @@ private const string ModVersion = "0.5.2";
         response.ContentLength64 = bytes.LongLength;
 
         await response.OutputStream.WriteAsync(bytes);
+    }
+
+    private static async Task<int> HandleActionRequestAsync(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        string requestId,
+        CancellationToken cancellationToken)
+    {
+        var actionRequest = await JsonHelper.DeserializeAsync<ActionRequest>(request.InputStream, cancellationToken);
+        if (actionRequest?.action == null)
+        {
+            throw new ApiException(400, "invalid_request", "Request body must contain an action field.");
+        }
+
+        var actionResponse = await GameThread.InvokeAsync(() => GameActionService.ExecuteAsync(actionRequest));
+        await WriteJsonAsync(response, 200, new
+        {
+            ok = true,
+            request_id = requestId,
+            data = actionResponse
+        });
+
+        return 200;
+    }
+
+    private static async Task<int> HandleActionAliasAsync(
+        string actionAlias,
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        string requestId,
+        CancellationToken cancellationToken)
+    {
+        var payload = await JsonHelper.DeserializeAsync<ActionRequest>(request.InputStream, cancellationToken) ?? new ActionRequest();
+        var actionRequest = new ActionRequest
+        {
+            action = actionAlias,
+            card_index = payload.card_index,
+            target_index = payload.target_index,
+            option_index = payload.option_index,
+            command = payload.command,
+            client_context = payload.client_context
+        };
+
+        var actionResponse = await GameThread.InvokeAsync(() => GameActionService.ExecuteAsync(actionRequest));
+        await WriteJsonAsync(response, 200, new
+        {
+            ok = true,
+            request_id = requestId,
+            data = actionResponse
+        });
+
+        return 200;
     }
 
     private static async Task<int> HandleEventStreamAsync(HttpListenerResponse response, CancellationToken cancellationToken)

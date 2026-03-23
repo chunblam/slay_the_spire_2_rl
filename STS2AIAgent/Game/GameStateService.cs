@@ -610,6 +610,68 @@ internal static class GameStateService
         };
     }
 
+    public static SessionStatePayload BuildSessionStatePayload()
+    {
+        var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        var combatState = CombatManager.Instance.DebugOnlyGetState();
+        var runState = RunManager.Instance.DebugOnlyGetState();
+        var screen = ResolveScreen(currentScreen);
+        var session = BuildSessionPayload(currentScreen, runState);
+        var availableActions = BuildAvailableActionNames(currentScreen, combatState, runState);
+        var legalActions = BuildSessionLegalActions(availableActions);
+        var gating = BuildSessionActionGate(session.phase, screen, availableActions);
+        var selectedCharacterId = BuildCharacterSelectPayload(currentScreen)?.selected_character_id;
+        var hasGameOverScreen = currentScreen is NGameOverScreen;
+
+        return new SessionStatePayload
+        {
+            phase = ResolveSessionPhaseForApi(session.phase, hasGameOverScreen, gating.can_act),
+            screen = screen,
+            in_run = session.phase == "run",
+            run_over = hasGameOverScreen,
+            can_act = gating.can_act,
+            block_reason = gating.block_reason,
+            selected_character_id = selectedCharacterId,
+            can_choose_character = availableActions.Contains("select_character"),
+            can_start_run = availableActions.Contains("embark"),
+            legal_actions = legalActions
+        };
+    }
+
+    public static SessionLegalActionsPayload BuildSessionLegalActionsPayload()
+    {
+        var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        var combatState = CombatManager.Instance.DebugOnlyGetState();
+        var runState = RunManager.Instance.DebugOnlyGetState();
+        var screen = ResolveScreen(currentScreen);
+        var availableActions = BuildAvailableActionNames(currentScreen, combatState, runState);
+        var legalActions = BuildSessionLegalActions(availableActions);
+        var session = BuildSessionPayload(currentScreen, runState);
+        var hasGameOverScreen = currentScreen is NGameOverScreen;
+        var gating = BuildSessionActionGate(session.phase, screen, availableActions);
+
+        return new SessionLegalActionsPayload
+        {
+            phase = ResolveSessionPhaseForApi(session.phase, hasGameOverScreen, gating.can_act),
+            screen = screen,
+            can_act = gating.can_act,
+            block_reason = gating.block_reason,
+            actions = legalActions
+        };
+    }
+
+    public static SessionActionGatePayload BuildSessionActionGatePayload()
+    {
+        var currentScreen = ActiveScreenContext.Instance.GetCurrentScreen();
+        var combatState = CombatManager.Instance.DebugOnlyGetState();
+        var runState = RunManager.Instance.DebugOnlyGetState();
+        var availableActions = BuildAvailableActionNames(currentScreen, combatState, runState);
+        var session = BuildSessionPayload(currentScreen, runState);
+        var screen = ResolveScreen(currentScreen);
+
+        return BuildSessionActionGate(session.phase, screen, availableActions);
+    }
+
     public static string ResolveScreen(IScreenContext? currentScreen)
     {
         if (GetOpenModal() != null)
@@ -1802,6 +1864,101 @@ internal static class GameStateService
         }
 
         return names.ToArray();
+    }
+
+    private static string ResolveSessionPhaseForApi(string phase, bool hasGameOverScreen, bool canAct)
+    {
+        if (hasGameOverScreen)
+        {
+            return "game_over";
+        }
+
+        if (!canAct && phase is "menu" or "character_select" or "run")
+        {
+            return "transition";
+        }
+
+        return phase;
+    }
+
+    private static string[] BuildSessionLegalActions(string[] availableActionNames)
+    {
+        var mapped = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var action in availableActionNames)
+        {
+            mapped.Add(action);
+
+            if (action == "continue_run")
+            {
+                mapped.Add("menu_continue");
+            }
+            else if (action == "open_character_select")
+            {
+                mapped.Add("menu_new_run");
+            }
+            else if (action == "select_character")
+            {
+                mapped.Add("menu_choose_character");
+            }
+            else if (action == "embark" || action == "confirm_modal")
+            {
+                mapped.Add("menu_confirm");
+            }
+            else if (action == "close_main_menu_submenu" || action == "dismiss_modal")
+            {
+                mapped.Add("menu_back");
+            }
+            else if (action == "return_to_main_menu")
+            {
+                mapped.Add("menu_return");
+            }
+        }
+
+        return mapped.ToArray();
+    }
+
+    private static SessionActionGatePayload BuildSessionActionGate(string phase, string screen, string[] availableActionNames)
+    {
+        if (availableActionNames.Length > 0)
+        {
+            return new SessionActionGatePayload
+            {
+                can_act = true
+            };
+        }
+
+        if (screen == "MODAL")
+        {
+            return new SessionActionGatePayload
+            {
+                can_act = false,
+                block_reason = "modal"
+            };
+        }
+
+        if (screen == "UNKNOWN")
+        {
+            return new SessionActionGatePayload
+            {
+                can_act = false,
+                block_reason = "unknown"
+            };
+        }
+
+        var reason = phase switch
+        {
+            "run" => "animation",
+            "menu" => "transition",
+            "character_select" => "loading",
+            _ => "transition"
+        };
+
+        return new SessionActionGatePayload
+        {
+            can_act = false,
+            block_reason = reason
+        };
     }
 
     private static CombatPayload? BuildCombatPayload(CombatState? combatState)
@@ -4667,6 +4824,49 @@ internal sealed class AvailableActionsPayload
     public string screen { get; init; } = "UNKNOWN";
 
     public ActionDescriptor[] actions { get; init; } = Array.Empty<ActionDescriptor>();
+}
+
+internal sealed class SessionStatePayload
+{
+    public string phase { get; init; } = "menu";
+
+    public string screen { get; init; } = "UNKNOWN";
+
+    public bool in_run { get; init; }
+
+    public bool run_over { get; init; }
+
+    public bool can_act { get; init; }
+
+    public string? block_reason { get; init; }
+
+    public string? selected_character_id { get; init; }
+
+    public bool can_choose_character { get; init; }
+
+    public bool can_start_run { get; init; }
+
+    public string[] legal_actions { get; init; } = Array.Empty<string>();
+}
+
+internal sealed class SessionLegalActionsPayload
+{
+    public string phase { get; init; } = "menu";
+
+    public string screen { get; init; } = "UNKNOWN";
+
+    public bool can_act { get; init; }
+
+    public string? block_reason { get; init; }
+
+    public string[] actions { get; init; } = Array.Empty<string>();
+}
+
+internal sealed class SessionActionGatePayload
+{
+    public bool can_act { get; init; }
+
+    public string? block_reason { get; init; }
 }
 
 internal sealed class CombatPayload
