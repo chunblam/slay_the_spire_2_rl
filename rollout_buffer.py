@@ -107,3 +107,29 @@ class RolloutBuffer:
         """设置 GAE 计算结果"""
         self._advantages = advantages
         self._returns = returns
+
+    def export_state(self) -> Dict:
+        """导出 buffer 状态，用于中断续训恢复。"""
+        return {
+            "buffer_size": int(self.buffer_size),
+            "obs_list": self.obs_list,
+            "actions": self.actions,
+            "old_log_probs": self.old_log_probs,
+            "rewards": self.rewards,
+            "dones": self.dones,
+            "values": self.values,
+            "action_masks": self.action_masks,
+            "size": int(self._size),
+        }
+
+    def load_state(self, payload: Dict):
+        """恢复 buffer 状态。"""
+        self.reset()
+        self.obs_list = list(payload.get("obs_list", []))
+        self.actions = list(payload.get("actions", []))
+        self.old_log_probs = list(payload.get("old_log_probs", []))
+        self.rewards = list(payload.get("rewards", []))
+        self.dones = list(payload.get("dones", []))
+        self.values = list(payload.get("values", []))
+        self.action_masks = list(payload.get("action_masks", []))
+        self._size = int(payload.get("size", len(self.actions)))

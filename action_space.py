@@ -50,12 +50,33 @@ class STS2ActionSpace:
         self.max_potions = max_potions
         self.total_actions = max(16, 10)
         self._shop_done_floors: Set[int] = set()
+        self._pending_smith_selection: bool = False
+        self._pending_rest_resolution: bool = False
 
     def decode(self, action_id: int, state: Dict) -> Dict:
         """
         返回可直接 POST 的 JSON 对象（含 \"action\" 字段）。
         """
         screen = state.get("screen_type", "NONE")
+        legal = [str(a) for a in (state.get("legal_actions") or [])]
+
+        # 离开锻造流程后自动清理标记，避免跨场景污染。
+        if self._pending_smith_selection and screen not in ("REST", "CARD_SELECT"):
+            self._pending_smith_selection = False
+        if self._pending_rest_resolution and screen not in ("REST", "OTHER"):
+            self._pending_rest_resolution = False
+
+        # 休息后续强制逻辑：优先确认/结算，避免被 menu_back 提前返回。
+        if self._pending_rest_resolution:
+            forced_rest = self._decode_rest_resolution(state)
+            if str(forced_rest.get("action", "")) in legal:
+                return forced_rest
+
+        # 锻造后续强制逻辑：进入 CARD_SELECT 时必须完成选牌/确认。
+        if self._pending_smith_selection and screen == "CARD_SELECT":
+            forced = self._decode_smith_card_select(state)
+            if str(forced.get("action", "")) in legal or not legal:
+                return forced
 
         if screen == "COMBAT":
             candidate = self._decode_combat(action_id, state)
@@ -94,10 +115,24 @@ class STS2ActionSpace:
         if not legal:
             return {"action": "end_turn"}
 
+        # 主菜单/开局流程：优先“进开局”，避免 menu_back 回退循环
+        if "return_to_main_menu" in legal:
+            return {"action": "return_to_main_menu"}
+        if "menu_new_run" in legal:
+            return {"action": "menu_new_run"}
+        if "open_character_select" in legal:
+            return {"action": "open_character_select"}
+        if "menu_choose_character" in legal:
+            return {"action": "menu_choose_character", "option_index": 0}
+        if "select_character" in legal:
+            return {"action": "select_character", "option_index": 0}
+        if "embark" in legal:
+            return {"action": "embark"}
+        if "menu_confirm" in legal:
+            return {"action": "menu_confirm"}
+
         if "close_shop_inventory" in legal:
             return {"action": "close_shop_inventory"}
-        if "menu_back" in legal:
-            return {"action": "menu_back"}
         if "collect_rewards_and_proceed" in legal:
             return {"action": "collect_rewards_and_proceed"}
         if "claim_reward" in legal:
@@ -112,6 +147,10 @@ class STS2ActionSpace:
             return {"action": "choose_event_option", "option_index": 0}
         if "choose_rest_option" in legal:
             return {"action": "choose_rest_option", "option_index": 0}
+        if "select_deck_card" in legal:
+            return {"action": "select_deck_card", "option_index": 0}
+        if "confirm_selection" in legal:
+            return {"action": "confirm_selection"}
         if "open_chest" in legal:
             return {"action": "open_chest"}
         if "choose_treasure_relic" in legal:
@@ -120,6 +159,8 @@ class STS2ActionSpace:
             return {"action": "open_shop_inventory"}
         if "proceed" in legal:
             return {"action": "proceed"}
+        if "menu_back" in legal:
+            return {"action": "menu_back"}
         if "end_turn" in legal:
             return {"action": "end_turn"}
         return {"action": legal[0]}
@@ -181,12 +222,49 @@ class STS2ActionSpace:
 
     def _decode_rest(self, action_id: int, state: Dict) -> Dict:
         idx = min(max(action_id, 0), 3)
+        # 若 agent 选择锻造（idx=1），强制进入后续选牌流程。
+        self._pending_smith_selection = (idx == 1)
+        # 若 agent 选择休息（idx=0），强制走完整结算链路。
+        self._pending_rest_resolution = (idx == 0)
         return {"action": "choose_rest_option", "option_index": idx}
 
     def _decode_card_select(self, action_id: int, state: Dict) -> Dict:
+        if self._pending_smith_selection:
+            return self._decode_smith_card_select(state)
         cards = (state.get("selection") or {}).get("cards", [])
         idx = min(action_id, len(cards) - 1) if cards else 0
         return {"action": "select_deck_card", "option_index": idx}
+
+    def _decode_smith_card_select(self, state: Dict) -> Dict:
+        legal = [str(a) for a in (state.get("legal_actions") or [])]
+        cards = (state.get("selection") or {}).get("cards", [])
+
+        if "select_deck_card" in legal:
+            # 优先选择可升级的牌（未升级），否则选第0张。
+            for i, c in enumerate(cards):
+                if isinstance(c, dict) and not bool(c.get("upgraded", False)):
+                    return {"action": "select_deck_card", "option_index": i}
+            return {"action": "select_deck_card", "option_index": 0}
+
+        if "confirm_selection" in legal:
+            self._pending_smith_selection = False
+            return {"action": "confirm_selection"}
+
+        # 无法识别时回退，并清理锻造标记避免死锁。
+        self._pending_smith_selection = False
+        return self._fallback_from_legal_actions(state)
+
+    def _decode_rest_resolution(self, state: Dict) -> Dict:
+        legal = [str(a) for a in (state.get("legal_actions") or [])]
+        # 休息后的常见确认链路，按优先级强制推进。
+        for action_name in ("confirm_selection", "menu_confirm", "confirm_modal", "dismiss_modal"):
+            if action_name in legal:
+                return {"action": action_name}
+        # 当出现可继续前进时，说明休息已完成，可清理标记。
+        if any(a in legal for a in ("proceed", "choose_map_node", "open_shop_inventory", "choose_event_option")):
+            self._pending_rest_resolution = False
+            return self._fallback_from_legal_actions(state)
+        return self._fallback_from_legal_actions(state)
 
     def _decode_shop(self, action_id: int, state: Dict) -> Dict:
         shop = state.get("shop") or {}

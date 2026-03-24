@@ -100,6 +100,42 @@ class STS2Env(gym.Env):
         truncated = self._step_count >= 1000
         return obs, reward, done, truncated, info
 
+    def refresh_state(self) -> Tuple[Dict, Dict]:
+        """
+        仅刷新当前状态，不执行动作，不推进训练步数。
+        用于短暂过渡态的容错等待。
+        """
+        st = self._get_state()
+        self._current_state = st
+        return self.encoder.encode(st), self._build_info(st)
+
+    def step_manual_intervention(
+        self,
+        prev_state: Dict,
+        max_wait: float = 180.0,
+        poll: Optional[float] = None,
+    ) -> Tuple[Dict, float, bool, bool, Dict]:
+        """
+        人工介入步骤：
+        - 等待用户手动操作，直到状态发生变化（或超时）
+        - 将这次变化同样转换为训练样本（reward/done/info）
+        """
+        new_state, changed = self._wait_for_manual_state_change(prev_state, max_wait=max_wait, poll=poll)
+        self._current_state = new_state
+        self._step_count += 1
+
+        reward, done = self._compute_reward(prev_state, new_state)
+        self._episode_reward += reward
+        obs = self.encoder.encode(new_state)
+        info = self._build_info(new_state)
+        info["action_executed"] = {"action": "manual_intervention"}
+        info["manual_intervention"] = True
+        info["manual_intervention_reason"] = "unknown_state_no_legal_actions"
+        info["manual_intervention_changed"] = changed
+        info["manual_state_delta"] = self._build_state_delta(prev_state, new_state)
+        truncated = self._step_count >= 1000
+        return obs, reward, done, truncated, info
+
     def render(self):
         if self.render_mode == "human" and self._current_state:
             self._print_state(self._current_state)
@@ -143,6 +179,7 @@ class STS2Env(gym.Env):
     @staticmethod
     def _normalize_state(raw_state: Dict, session_state: Optional[Dict], legal_actions: List[str]) -> Dict:
         out: Dict[str, Any] = {}
+        out["raw_screen"] = str(raw_state.get("screen", "")).upper()
         run = raw_state.get("run") or {}
         combat = raw_state.get("combat") or {}
         player = combat.get("player") or {}
@@ -371,6 +408,56 @@ class STS2Env(gym.Env):
             time.sleep(poll)
         return last_state
 
+    def _wait_for_manual_state_change(
+        self,
+        prev_state: Dict,
+        max_wait: float = 180.0,
+        poll: Optional[float] = None,
+    ) -> Tuple[Dict, bool]:
+        poll = self.action_poll_interval if poll is None else max(0.1, poll)
+        start = time.time()
+        baseline_sig = self._state_signature(prev_state)
+        last_state = prev_state
+        while time.time() - start < max_wait:
+            st = self._get_state()
+            last_state = st
+            if self._state_signature(st) != baseline_sig:
+                return st, True
+            time.sleep(poll)
+        return last_state, False
+
+    @staticmethod
+    def _state_signature(state: Dict) -> Tuple:
+        combat_player = (state.get("combat") or {}).get("player") or {}
+        return (
+            state.get("screen_type", ""),
+            state.get("phase", ""),
+            bool(state.get("can_act", False)),
+            tuple(state.get("legal_actions") or []),
+            int(state.get("floor", 0) or 0),
+            int(state.get("gold", 0) or 0),
+            int(combat_player.get("hp", 0) or 0),
+            int(combat_player.get("block", 0) or 0),
+            len((state.get("deck") or [])),
+            len((state.get("relics") or [])),
+        )
+
+    @staticmethod
+    def _build_state_delta(prev_state: Dict, new_state: Dict) -> Dict:
+        prev_player = (prev_state.get("combat") or {}).get("player") or {}
+        new_player = (new_state.get("combat") or {}).get("player") or {}
+        return {
+            "screen_type": [prev_state.get("screen_type", ""), new_state.get("screen_type", "")],
+            "phase": [prev_state.get("phase", ""), new_state.get("phase", "")],
+            "can_act": [bool(prev_state.get("can_act", False)), bool(new_state.get("can_act", False))],
+            "legal_actions_count": [len(prev_state.get("legal_actions") or []), len(new_state.get("legal_actions") or [])],
+            "floor": [int(prev_state.get("floor", 0) or 0), int(new_state.get("floor", 0) or 0)],
+            "gold": [int(prev_state.get("gold", 0) or 0), int(new_state.get("gold", 0) or 0)],
+            "hp": [int(prev_player.get("hp", 0) or 0), int(new_player.get("hp", 0) or 0)],
+            "deck_size": [len(prev_state.get("deck") or []), len(new_state.get("deck") or [])],
+            "relic_count": [len(prev_state.get("relics") or []), len(new_state.get("relics") or [])],
+        }
+
     def _throttle_action_if_needed(self):
         if self.action_min_interval <= 0:
             return
@@ -380,35 +467,18 @@ class STS2Env(gym.Env):
             time.sleep(remain)
 
     def _compute_reward(self, prev_state: Dict, new_state: Dict) -> Tuple[float, bool]:
+        # 严格 v2：训练奖励由 RewardShaper 统一计算，这里仅承担 done 判定职责。
         reward = 0.0
         done = False
 
-        if new_state.get("screen_type") == "GAME_OVER":
-            victory = bool((new_state.get("game_over") or {}).get("victory", False))
-            reward += 50.0 if victory else -20.0
+        # 只要进入过 GAME_OVER，下一步也视为终局，强制触发 reset。
+        if prev_state.get("screen_type") == "GAME_OVER":
             done = True
             return reward, done
 
-        prev_combat = prev_state.get("combat", {})
-        new_combat = new_state.get("combat", {})
-        if prev_combat and new_combat:
-            prev_hp = prev_combat.get("player", {}).get("hp", 0)
-            new_hp = new_combat.get("player", {}).get("hp", 0)
-            reward -= max(prev_hp - new_hp, 0) * 0.1
-
-            prev_alive = len([m for m in prev_combat.get("monsters", []) if m.get("hp", 0) > 0])
-            new_alive = len([m for m in new_combat.get("monsters", []) if m.get("hp", 0) > 0])
-            reward += max(prev_alive - new_alive, 0) * 5.0
-
-        prev_floor = prev_state.get("floor", 0)
-        new_floor = new_state.get("floor", 0)
-        if new_floor > prev_floor:
-            reward += 1.0
-
-        prev_gold = prev_state.get("gold", 0)
-        new_gold = new_state.get("gold", 0)
-        if new_gold > prev_gold:
-            reward += (new_gold - prev_gold) * 0.01
+        if new_state.get("screen_type") == "GAME_OVER":
+            done = True
+            return reward, done
 
         return reward, done
 
