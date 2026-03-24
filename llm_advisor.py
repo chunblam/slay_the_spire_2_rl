@@ -33,6 +33,12 @@ class LLMAdvice:
     # 新增：记录上次对选牌的具体推荐（供 RewardShaper 比对 agent 决策）
     card_recommendation: int = -99   # -99=未评估, -1=建议跳过, 0..n=推荐索引
     card_confidence: float = 0.0     # 推荐置信度 [0, 1]，低于阈值不加塑形
+    relic_recommendation: int = -99
+    relic_confidence: float = 0.0
+    map_recommendation: int = -99
+    map_confidence: float = 0.0
+    map_route_scores: List[float] = field(default_factory=list)
+    combat_opening: Dict = field(default_factory=dict)
 
 
 # ─── LLM 后端封装 ──────────────────────────────────────────────────────────────
@@ -175,6 +181,50 @@ reward_shaping 规则:
 - confidence < 0.5 表示不确定，不应用奖励塑形
 - 若候选牌均与当前路线无关，建议跳过（-1）而非随便拿一张"""
 
+    SYSTEM_PROMPT_RELIC_EVAL = """你是杀戮尖塔2的顶级策略专家。
+你的任务：基于玩家【当前实际牌组、遗物、楼层、HP】，评估遗物选取价值。
+重要原则：
+- 评估遗物对现有牌组的实际加成，而非理论价值
+- 考虑当前楼层（早期灵活性遗物更好，后期协同遗物更好）
+- 考虑当前HP（低HP时防御性遗物优先）
+- 若多个遗物均无明显协同，选择通用性最强的
+必须只返回JSON，不要有任何其他文字：
+{
+  "recommended_index": 整数（0开始）,
+  "confidence": 0.0到1.0,
+  "reasoning": "推荐理由（100字以内）",
+  "relic_effect_on_deck": "该遗物对当前牌组的具体加成描述",
+  "synergy_cards": ["与该遗物有协同的现有牌组中的牌"]
+}"""
+
+    SYSTEM_PROMPT_MAP_EVAL = """你是杀戮尖塔2的顶级策略专家。
+你的任务：基于玩家当前状态，评估地图各条路线的优先级。
+评估维度：
+- 当前HP vs 精英战能力（HP高时可提高精英权重）
+- 金币 vs 商店价值（有明确购买目标时商店优先）
+- 牌组是否需要升级 vs 营地价值
+- 整体进度 vs 剩余楼层
+必须只返回JSON，不要有任何其他文字：
+{
+  "recommended_option_index": 整数,
+  "confidence": 0.0到1.0,
+  "reasoning": "推荐理由（80字以内）",
+  "route_value_scores": [与输入路线等长的0.0-1.0评分],
+  "priority": "hp_recovery/card_upgrade/relic/shop/progress"
+}"""
+
+    SYSTEM_PROMPT_COMBAT_OPENING = """你是杀戮尖塔2的顶级策略专家。
+你的任务：在战斗开始前，分析敌人信息和当前手牌，给出本场战斗的最优行动建议。
+必须只返回JSON，不要有任何其他文字：
+{
+  "threat_level": "low/medium/high/critical",
+  "priority_action": "attack/defend/mixed",
+  "opening_card_sequence": [推荐出牌顺序，按当前手牌索引，例如[2,0,3]],
+  "priority_target_index": 优先攻击敌人索引（0开始，可为null）,
+  "key_warning": "本战最重要提示（50字以内）",
+  "expected_rounds": "预计结束回合数: 1/2/3/4+"
+}"""
+
     def __init__(
         self,
         llm_backend: LLMBackend,
@@ -182,11 +232,13 @@ reward_shaping 规则:
         call_interval_steps: int = 10,
         cache_ttl: float = 30.0,
         card_shaping_confidence_threshold: float = 0.55,
+        combat_bias_steps: int = 3,
     ):
         self.llm = llm_backend
         self.call_interval = call_interval_steps
         self.cache_ttl = cache_ttl
         self.confidence_threshold = card_shaping_confidence_threshold
+        self.combat_bias_steps = max(1, int(combat_bias_steps))
         self._last_call_time: float = 0.0
         self._last_advice: Optional[LLMAdvice] = None
         self._step_counter: int = 0
@@ -309,6 +361,169 @@ reward_shaping 规则:
                 self._last_advice.card_confidence = 0.0
             return -1, 0.0, f"LLM 调用失败: {e}"
 
+    def evaluate_relic_choice(
+        self,
+        state: Dict,
+        relic_options: List[Dict],
+    ) -> Tuple[int, float, str]:
+        """评估遗物选择，返回 (recommended_index, confidence, reasoning)"""
+        if not relic_options:
+            return 0, 0.0, "无遗物选项"
+
+        deck = state.get("deck", [])
+        relics = state.get("relics", [])
+        floor = state.get("floor", 0)
+        player = (state.get("combat") or {}).get("player", {})
+        hp = player.get("hp", "?")
+        max_hp = player.get("max_hp", "?")
+        options_text = "\n".join(
+            f"[{i}] {r.get('name', '?')} | {self._trim(str(r.get('description', '')), 80)}"
+            for i, r in enumerate(relic_options)
+        )
+        user_prompt = (
+            f"楼层: {floor} | HP: {hp}/{max_hp}\n"
+            f"当前遗物: {[x.get('name', '?') for x in relics[:12]]}\n"
+            f"当前牌组摘要:\n{self._summarize_deck(deck)}\n\n"
+            f"候选遗物:\n{options_text}\n"
+            "请给出最优遗物选择。"
+        )
+        try:
+            resp = self.llm.call(self.SYSTEM_PROMPT_RELIC_EVAL, user_prompt, max_tokens=300)
+            data = _parse_json_response(resp)
+            idx = int(data.get("recommended_index", 0))
+            conf = float(data.get("confidence", 0.5))
+            reason = str(data.get("reasoning", ""))
+            if idx < 0:
+                idx = 0
+            if idx >= len(relic_options):
+                idx = len(relic_options) - 1
+
+            if self._last_advice is None:
+                self._last_advice = LLMAdvice(
+                    deck_route="mixed",
+                    route_score=0.5,
+                    key_synergies=[],
+                    reward_shaping=0.0,
+                    reasoning="relic_eval_only",
+                )
+            self._last_advice.relic_recommendation = idx
+            self._last_advice.relic_confidence = conf
+            return idx, conf, reason
+        except Exception as e:
+            print(f"[LLMAdvisor] evaluate_relic_choice 失败: {e}")
+            return 0, 0.0, f"LLM 调用失败: {e}"
+
+    def evaluate_map_route(
+        self,
+        state: Dict,
+        route_options: List[Dict],
+    ) -> Tuple[int, float, str, List[float]]:
+        """评估地图路线，返回 (recommended_index, confidence, reasoning, route_scores)"""
+        if not route_options:
+            return 0, 0.0, "无路线选项", []
+
+        floor = state.get("floor", 0)
+        gold = state.get("gold", 0)
+        player = (state.get("combat") or {}).get("player", {})
+        hp = player.get("hp", "?")
+        max_hp = player.get("max_hp", "?")
+        options_text = "\n".join(f"[{i}] {o}" for i, o in enumerate(route_options))
+        user_prompt = (
+            f"楼层: {floor} | HP: {hp}/{max_hp} | 金币: {gold}\n"
+            f"当前牌组摘要:\n{self._summarize_deck(state.get('deck', []))}\n\n"
+            f"地图可选路线:\n{options_text}\n"
+            "请评估并给出最优路线索引。"
+        )
+        try:
+            resp = self.llm.call(self.SYSTEM_PROMPT_MAP_EVAL, user_prompt, max_tokens=320)
+            data = _parse_json_response(resp)
+            idx = int(data.get("recommended_option_index", 0))
+            conf = float(data.get("confidence", 0.5))
+            reason = str(data.get("reasoning", ""))
+            scores = data.get("route_value_scores", [])
+            route_scores = [float(x) for x in scores] if isinstance(scores, list) else []
+            if idx < 0:
+                idx = 0
+            if idx >= len(route_options):
+                idx = len(route_options) - 1
+            if len(route_scores) != len(route_options):
+                route_scores = [0.5] * len(route_options)
+
+            if self._last_advice is None:
+                self._last_advice = LLMAdvice(
+                    deck_route="mixed",
+                    route_score=0.5,
+                    key_synergies=[],
+                    reward_shaping=0.0,
+                    reasoning="map_eval_only",
+                )
+            self._last_advice.map_recommendation = idx
+            self._last_advice.map_confidence = conf
+            self._last_advice.map_route_scores = route_scores
+            return idx, conf, reason, route_scores
+        except Exception as e:
+            print(f"[LLMAdvisor] evaluate_map_route 失败: {e}")
+            return 0, 0.0, f"LLM 调用失败: {e}", [0.5] * len(route_options)
+
+    def evaluate_combat_opening(self, state: Dict) -> Dict:
+        """评估战斗开局建议，返回 opening advice dict。"""
+        combat = state.get("combat") or {}
+        player = combat.get("player") or {}
+        monsters = combat.get("monsters") or []
+        hand = combat.get("hand") or []
+        monsters_text = "\n".join(
+            f"[{i}] {m.get('name', '?')} hp={m.get('hp', '?')} block={m.get('block', 0)} intent={((m.get('intent') or {}).get('type', '?'))}"
+            for i, m in enumerate(monsters)
+        )
+        hand_text = "\n".join(
+            f"[{i}] {c.get('name', '?')} cost={c.get('cost', '?')} dmg={c.get('damage', 0)} blk={c.get('block', 0)}"
+            for i, c in enumerate(hand)
+        )
+        user_prompt = (
+            f"玩家HP: {player.get('hp', '?')}/{player.get('max_hp', '?')} 能量:{combat.get('energy', '?')}\n"
+            f"敌人信息:\n{monsters_text}\n\n"
+            f"当前手牌:\n{hand_text}\n"
+            "请给出本战斗的开局行动建议。"
+        )
+        fallback = {
+            "threat_level": "medium",
+            "priority_action": "mixed",
+            "opening_card_sequence": [],
+            "priority_target_index": None,
+            "key_warning": "",
+            "expected_rounds": "3+",
+        }
+        try:
+            resp = self.llm.call(self.SYSTEM_PROMPT_COMBAT_OPENING, user_prompt, max_tokens=280)
+            data = _parse_json_response(resp)
+            seq = data.get("opening_card_sequence", [])
+            if not isinstance(seq, list):
+                seq = []
+            seq = [int(x) for x in seq if isinstance(x, (int, float))]
+            data["opening_card_sequence"] = seq[: self.combat_bias_steps]
+            if self._last_advice is None:
+                self._last_advice = LLMAdvice(
+                    deck_route="mixed",
+                    route_score=0.5,
+                    key_synergies=[],
+                    reward_shaping=0.0,
+                    reasoning="combat_opening_only",
+                )
+            self._last_advice.combat_opening = data
+            return data
+        except Exception as e:
+            print(f"[LLMAdvisor] evaluate_combat_opening 失败: {e}")
+            if self._last_advice is None:
+                self._last_advice = LLMAdvice(
+                    deck_route="mixed",
+                    route_score=0.5,
+                    key_synergies=[],
+                    reward_shaping=0.0,
+                    reasoning="combat_opening_failed",
+                )
+            self._last_advice.combat_opening = fallback
+            return fallback
+
     def get_reward_shaping_bonus(self, state: Dict) -> float:
         """全局路线质量的奖励塑形分 — 供 RewardShaper 在非 CARD_REWARD 时用"""
         advice = self.get_advice(state)
@@ -327,6 +542,40 @@ reward_shaping 规则:
         if self._last_advice is not None:
             self._last_advice.card_recommendation = -99
             self._last_advice.card_confidence = 0.0
+
+    def get_last_relic_recommendation(self) -> Tuple[int, float]:
+        if self._last_advice is None or self._last_advice.relic_recommendation == -99:
+            return -99, 0.0
+        return self._last_advice.relic_recommendation, self._last_advice.relic_confidence
+
+    def invalidate_relic_recommendation(self):
+        if self._last_advice is not None:
+            self._last_advice.relic_recommendation = -99
+            self._last_advice.relic_confidence = 0.0
+
+    def get_last_map_recommendation(self) -> Tuple[int, float, List[float]]:
+        if self._last_advice is None or self._last_advice.map_recommendation == -99:
+            return -99, 0.0, []
+        return (
+            self._last_advice.map_recommendation,
+            self._last_advice.map_confidence,
+            list(self._last_advice.map_route_scores),
+        )
+
+    def invalidate_map_recommendation(self):
+        if self._last_advice is not None:
+            self._last_advice.map_recommendation = -99
+            self._last_advice.map_confidence = 0.0
+            self._last_advice.map_route_scores = []
+
+    def get_last_combat_opening(self) -> Dict:
+        if self._last_advice is None:
+            return {}
+        return dict(self._last_advice.combat_opening or {})
+
+    def invalidate_combat_opening(self):
+        if self._last_advice is not None:
+            self._last_advice.combat_opening = {}
 
     # ── 内部：全局路线评估 ──────────────────────────────────────────────────
 

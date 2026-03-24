@@ -43,6 +43,10 @@ class RewardShaper:
         card_match_bonus: float = 1.0,      # 与 LLM 推荐一致时的原始奖励
         card_mismatch_penalty: float = 0.5, # 明确不一致时的惩罚（应小于 match_bonus）
         confidence_threshold: float = 0.55, # 低于此不施加 match 塑形
+        relic_choice_weight: float = 0.25,
+        map_route_weight: float = 0.25,
+        combat_opening_weight: float = 0.2,
+        combat_bias_steps: int = 3,
     ):
         self.llm_advisor = llm_advisor
         self.llm_weight = llm_weight
@@ -51,6 +55,10 @@ class RewardShaper:
         self.card_match_bonus = card_match_bonus
         self.card_mismatch_penalty = card_mismatch_penalty
         self.confidence_threshold = confidence_threshold
+        self.relic_choice_weight = relic_choice_weight
+        self.map_route_weight = map_route_weight
+        self.combat_opening_weight = combat_opening_weight
+        self.combat_bias_steps = max(1, int(combat_bias_steps))
 
     # ── 主入口 ──────────────────────────────────────────────────────────────
 
@@ -62,6 +70,10 @@ class RewardShaper:
         action: Dict,
         done: bool,
         agent_card_index: Optional[int] = None,  # 新增：agent 实际选的卡牌索引
+        agent_relic_index: Optional[int] = None,
+        agent_map_index: Optional[int] = None,
+        combat_step: Optional[int] = None,
+        agent_card_played: Optional[int] = None,
     ) -> float:
         """
         计算最终塑形奖励。
@@ -82,6 +94,28 @@ class RewardShaper:
             total += self.card_weight * card_bonus
             # 用完即重置，避免同一推荐被多步重复消费
             self.llm_advisor.invalidate_card_recommendation()
+
+        # 2.1 遗物选择一致性奖励
+        if agent_relic_index is not None and self.llm_advisor is not None:
+            relic_bonus = self._compute_relic_match_bonus(agent_relic_index)
+            total += self.relic_choice_weight * relic_bonus
+            self.llm_advisor.invalidate_relic_recommendation()
+
+        # 2.2 地图路线一致性奖励
+        if agent_map_index is not None and self.llm_advisor is not None:
+            map_bonus = self._compute_map_match_bonus(agent_map_index)
+            total += self.map_route_weight * map_bonus
+            self.llm_advisor.invalidate_map_recommendation()
+
+        # 2.3 战斗开局一致性奖励（仅前若干步）
+        if (
+            combat_step is not None
+            and agent_card_played is not None
+            and self.llm_advisor is not None
+            and combat_step < self.combat_bias_steps
+        ):
+            opening_bonus = self._compute_combat_opening_bonus(combat_step, agent_card_played)
+            total += self.combat_opening_weight * opening_bonus
 
         # 3. 全局路线奖励（非战斗屏幕，非 CARD_REWARD 时）
         screen = new_state.get("screen_type", "")
@@ -135,6 +169,54 @@ class RewardShaper:
             return penalty
 
         return 0.0   # 置信度处于灰色区间，中性
+
+    def _compute_relic_match_bonus(self, agent_relic_index: int) -> float:
+        if self.llm_advisor is None:
+            return 0.0
+        rec_idx, conf = self.llm_advisor.get_last_relic_recommendation()
+        if rec_idx == -99 or conf < self.confidence_threshold:
+            return 0.0
+        if agent_relic_index == rec_idx:
+            return 1.0
+        if conf >= self.confidence_threshold + 0.1:
+            return -0.5
+        return 0.0
+
+    def _compute_map_match_bonus(self, agent_map_index: int) -> float:
+        if self.llm_advisor is None:
+            return 0.0
+        rec_idx, conf, route_scores = self.llm_advisor.get_last_map_recommendation()
+        if rec_idx == -99 or conf < self.confidence_threshold:
+            return 0.0
+
+        # 若有路线评分，按评分差异给软奖励，减少硬惩罚抖动。
+        if route_scores and 0 <= agent_map_index < len(route_scores):
+            agent_score = float(route_scores[agent_map_index])
+            best_score = max(float(x) for x in route_scores)
+            if best_score <= 1e-6:
+                return 0.0
+            return max(min((agent_score / best_score) - 0.5, 1.0), -0.5)
+
+        if agent_map_index == rec_idx:
+            return 1.0
+        if conf >= self.confidence_threshold + 0.1:
+            return -0.4
+        return 0.0
+
+    def _compute_combat_opening_bonus(self, combat_step: int, agent_card_played: int) -> float:
+        if self.llm_advisor is None:
+            return 0.0
+        advice = self.llm_advisor.get_last_combat_opening()
+        if not advice:
+            return 0.0
+        seq = advice.get("opening_card_sequence", [])
+        if not isinstance(seq, list) or combat_step >= len(seq):
+            return 0.0
+        try:
+            expected = int(seq[combat_step])
+        except Exception:
+            return 0.0
+        return 0.5 if expected == agent_card_played else -0.2
 
     # ── 规则奖励（不变，补充注释）──────────────────────────────────────────
 

@@ -10,8 +10,8 @@ env:
   character_index: 0          # 自动开局时角色索引（0-based）
   startup_debug: false        # 仅排障时打开，常态训练建议关闭
   action_poll_interval: 0.8   # 轮询退避间隔（用于 reset/retry）；更大更平滑
-  action_min_interval: 1.0    # 每两个 action 的最小间隔（秒）
-  post_action_settle: 1.0     # action 发出后等待状态稳定的时间（秒）
+  action_min_interval: 0.8    # 每两个 action 的最小间隔（秒）
+  post_action_settle: 0.8     # action 发出后等待状态稳定的时间（秒）
   action_retry_count: 1       # 单步动作失败重试次数（不宜过大，避免抖动）
   num_actions: 16
 
@@ -34,10 +34,12 @@ train:
   gamma: 0.99
   gae_lambda: 0.95
   save_interval: 100_000
+  resume_on_restart: true      # 中断后自动读取 checkpoints/training_state.json 续训
+  save_latest_per_update: true # 每次 PPO update 保存 latest_model.pt，降低中断损失
 
 # ── LLM Advisor ───────────────────────────────────────────────────────────────
 llm:
-  enabled: false             # 设为 true 开启
+  enabled: false             # 总开关：false=纯RL，true=启用全部LLM综合评估（card/relic/map/combat_opening）
 
   # ── 后端选择（取消注释其中一组）──────────────────────────────────────────
   # 选项 A: 本地 Ollama（推荐，免费）
@@ -60,6 +62,7 @@ llm:
   # LLM 调用频率控制
   call_interval_steps: 10    # 每 N 步全局评估一次
   cache_ttl: 30.0            # 同一建议最长复用秒数
+  combat_bias_steps: 3       # 战斗开局建议影响前 N 步
 
   # 选牌 match 奖励的置信度阈值
   # 低于此值时，LLM 不确定，不加 match bonus / penalty
@@ -74,6 +77,9 @@ reward:
   card_weight: 0.4           # match bonus 的缩放系数
   card_match_bonus: 1.0      # agent 与 LLM 推荐一致时的原始 bonus
   card_mismatch_penalty: 0.5 # 高置信度下不一致时的惩罚
+  relic_choice_weight: 0.25  # 遗物选择一致性奖励权重（llm.enabled=true 时生效）
+  map_route_weight: 0.25     # 地图路线一致性奖励权重（llm.enabled=true 时生效）
+  combat_opening_weight: 0.2 # 战斗开局建议一致性奖励权重（llm.enabled=true 时生效）
   # 建议: card_mismatch_penalty < card_match_bonus，避免惩罚过大压制探索
 
 # ── 其他 ──────────────────────────────────────────────────────────────────────

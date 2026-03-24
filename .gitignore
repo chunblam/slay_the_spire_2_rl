@@ -8,4 +8,5 @@ runs/
 *.pt
 *.pth
 
-#docs/
+docs/
+update/
