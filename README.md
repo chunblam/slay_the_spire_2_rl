@@ -42,14 +42,14 @@
 
 | **常用 `action`（节选）** | **含义** |
 | :--- | :--- |
-| `play_card` | 出牌：`card_index`，需要时带 `target`（敌人 `entity_id`） |
-| `use_potion` | 用药水：`slot`，需要时带 `target` |
+| `play_card` | 出牌：`card_index`，需要时带 `target_index`（敌人索引） |
+| `use_potion` | 用药水：`option_index`，需要时带 `target_index` |
 | `end_turn` | 结束回合 |
-| `select_card_reward` / `skip_card_reward` | 奖励牌界面 |
-| `choose_map_node` | 地图：`index` 对应状态里的 `next_options` |
-| `choose_rest_option` | 营地选项：`index` |
-| `shop_purchase` / `proceed` | 商店购买 / 离开等继续流程 |
-| `choose_event_option` | 事件选项：`index` |
+| `choose_reward_card` / `skip_reward_cards` | 奖励牌界面 |
+| `choose_map_node` | 地图：`option_index` 对应状态里的 `next_options` |
+| `choose_rest_option` | 营地选项：`option_index` |
+| `buy_card` / `buy_relic` / `buy_potion` / `proceed` | 商店购买 / 离开等继续流程 |
+| `choose_event_option` | 事件选项：`option_index` |
 
 | **提示** | `STS2AIAgent` 默认监听 **`127.0.0.1:18080`**。若使用自定义端口，可通过环境变量 **`STS2_API_PORT`** 或启动脚本参数覆盖，并在 **`ppo_default.yaml`** / **`test_connection.py --port`** 同步。 |
 
@@ -438,7 +438,8 @@ conda deactivate
 - **`llm.enabled: false`** 先关闭 LLM，验证 RL 部分正常
 - **`train.total_steps: 50000`** 快速验证后再增大
 - **`device: cuda`** 有 GPU 且已装好 CUDA 版 PyTorch 时使用；否则 **`cpu`** 或 **`auto`**
-- **`env.port` / `env.api_mode`** 与 Mod 实际端口、单机/联机一致
+- **`env.port`** 与 Mod 实际端口一致（当前项目已统一为 STS2AIAgent session 流程，不再使用 `api_mode`）
+- **`env.action_poll_interval` / `env.action_min_interval` / `env.post_action_settle`** 控制轮询与动作节奏（观感卡顿优先调这些参数）
 
 **Step 4：开始训练**
 
@@ -457,7 +458,7 @@ conda deactivate
 | **问题现象** | **可能原因** | **解决方法** |
 | :--- | :--- | :--- |
 | test_connection.py 超时或连接失败 | 游戏未运行、Mod 未启用或端口错误 | 确认 API 地址为 **`http://127.0.0.1:<端口>/health`** 可访问，并与 **`ppo_default.yaml`** 中 **`env.port`** 一致 |
-| HTTP 409 | 单机/联机 API 混用 | 使用与当前对局一致的 **`env.api_mode`** |
+| HTTP 409 | 动作不在当前 `legal_actions`、或参数不合法 | 检查 `session/state` 的 `can_act` 与 `legal_actions`；参数统一使用 `option_index` / `target_index` |
 | 训练开始后立即报错 | 游戏不在可操作屏幕 | 在游戏中进入一局，保持在战斗/地图屏幕 |
 | reward 全为 0 | 奖励函数未触发 | 检查 screen_type 是否为 COMBAT，打印 info 字典 |
 | 选牌 match 奖励始终不触发 | `action_executed` 字段与解析逻辑不一致 | 确认执行动作与当前 API 命名一致（推荐 session/legacy 二选一），并检查 `train.py` 中选牌索引解析 |
