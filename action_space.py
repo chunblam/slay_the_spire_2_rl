@@ -94,6 +94,8 @@ class STS2ActionSpace:
             candidate = self._decode_shop(action_id, state)
         elif screen == "EVENT":
             candidate = self._decode_event(action_id, state)
+        elif screen == "CHOOSE_CARD_BUNDLE":
+            candidate = self._decode_choose_card_bundle(action_id, state)
         elif screen == "CHEST":
             candidate = self._decode_chest(action_id, state)
         else:
@@ -159,11 +161,49 @@ class STS2ActionSpace:
             return {"action": "open_shop_inventory"}
         if "proceed" in legal:
             return {"action": "proceed"}
+        if "choose_bundle" in legal:
+            # choose_bundle 在 API 侧要求 option_index；兜底选左包（0），避免 409。
+            return {"action": "choose_bundle", "option_index": 0}
         if "menu_back" in legal:
             return {"action": "menu_back"}
         if "end_turn" in legal:
             return {"action": "end_turn"}
         return {"action": legal[0]}
+
+    def _decode_choose_card_bundle(self, action_id: int, state: Dict) -> Dict:
+        """
+        CHOOSE_CARD_BUNDLE 两阶段：
+          - pick_bundle: action=choose_bundle, option_index=0/1（左右两包）
+          - bundle_preview: action=proceed（预览后打勾 Confirm）
+        """
+        legal = [str(a) for a in (state.get("legal_actions") or [])]
+        card_bundle = state.get("card_bundle") or {}
+
+        # pick_bundle 阶段：choose_bundle 需要 option_index 0/1 且必须在可选包数量内
+        if "choose_bundle" in legal:
+            controls = card_bundle.get("ui_controls") or []
+            picks: List[dict] = []
+            if isinstance(controls, list):
+                for c in controls:
+                    if isinstance(c, dict) and c.get("role") == "choose_bundle":
+                        picks.append(c)
+
+            pick_count = len(picks)
+            # 未知 payload 时保守选左包（0），避免 API 409：option_index 越界
+            if pick_count <= 1:
+                option_index = 0
+            else:
+                option_index = int(action_id % 2)
+                if option_index >= pick_count:
+                    option_index = 0
+
+            return {"action": "choose_bundle", "option_index": option_index}
+
+        # bundle_preview 阶段：只需要 proceed
+        if "proceed" in legal:
+            return {"action": "proceed"}
+
+        return self._fallback_from_legal_actions(state)
 
     def _decode_combat(self, action_id: int, state: Dict) -> Dict:
         combat = state.get("combat", {})
@@ -398,6 +438,24 @@ class STS2ActionSpace:
         elif screen in ("CARD_REWARD", "REWARD", "MAP", "REST", "SHOP", "CARD_SELECT", "CHEST"):
             for i in range(min(8, self.total_actions)):
                 mask[i] = True
+        elif screen == "CHOOSE_CARD_BUNDLE":
+            card_bundle = state.get("card_bundle") or {}
+            phase = str(card_bundle.get("phase", "")).lower()
+
+            if "choose_bundle" in (state.get("legal_actions") or []):
+                # pick_bundle：action_id=0/1 对应左右两包
+                controls = card_bundle.get("ui_controls") or []
+                picks = []
+                if isinstance(controls, list):
+                    for c in controls:
+                        if isinstance(c, dict) and c.get("role") == "choose_bundle":
+                            picks.append(c)
+                pick_count = len(picks)
+                mask[0] = True
+                mask[1] = pick_count >= 2
+            if "proceed" in (state.get("legal_actions") or []):
+                # bundle_preview：只需要 proceed（Confirm）
+                mask[0] = True
         elif screen == "EVENT":
             mask[0] = True
 

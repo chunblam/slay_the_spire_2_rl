@@ -168,6 +168,7 @@ class STS2Env(gym.Env):
             "EVENT": "EVENT",
             "CHEST": "CHEST",
             "CARD_SELECTION": "CARD_SELECT",
+            "CHOOSE_CARD_BUNDLE": "CHOOSE_CARD_BUNDLE",
             "REWARD": "REWARD",
             "GAME_OVER": "GAME_OVER",
             "MAIN_MENU": "NONE",
@@ -256,6 +257,12 @@ class STS2Env(gym.Env):
         out["event"] = raw_state.get("event") or {}
         out["chest"] = raw_state.get("chest") or {}
         out["selection"] = raw_state.get("selection") or {}
+        # 事件卡包（Bundle）选择屏 payload：pick_bundle 阶段选左右两包，bundle_preview 阶段确认 proceed
+        card_bundle = raw_state.get("card_bundle") or raw_state.get("cardBundle")
+        if card_bundle is None and isinstance(raw_state.get("agent_view"), dict):
+            agent_view = raw_state.get("agent_view", {}) or {}
+            card_bundle = agent_view.get("card_bundle") or agent_view.get("cardBundle")
+        out["card_bundle"] = card_bundle if isinstance(card_bundle, dict) else {}
 
         return out
 
