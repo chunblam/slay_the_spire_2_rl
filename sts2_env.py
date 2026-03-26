@@ -81,6 +81,8 @@ class STS2Env(gym.Env):
 
         api_call = self.action_handler.decode(action, prev_state)
         new_state = self._execute_action_with_recovery(api_call)
+        # Wait for action to stabilize (API completes processing) before polling for next state
+        new_state = self._wait_for_action_stable(new_state, max_wait=20.0)
         new_state = self._wait_until_actionable_or_terminal(new_state, max_wait=20.0)
         self._current_state = new_state
         self._step_count += 1
@@ -446,6 +448,36 @@ class STS2Env(gym.Env):
             if self._can_act_now(st) or self._is_terminal_state(st):
                 return st
             time.sleep(poll)
+        return last_state
+
+    def _wait_for_action_stable(
+        self,
+        start_state: Dict,
+        max_wait: float = 20.0,
+        poll: Optional[float] = None,
+    ) -> Dict:
+        """
+        Waits for action to stabilize (API processing complete).
+        This avoids the multiple-POST problem by ensuring the API has processed 
+        the action before the RL environment polls for the next state.
+        
+        Stability is indicated by the "stable" flag in the response.
+        If not present, returns immediately (assumes stable).
+        """
+        if start_state.get("stable", True):
+            return start_state
+
+        poll = self.action_poll_interval if poll is None else max(0.1, poll)
+        deadline = time.time() + max(0.1, max_wait)
+        last_state = start_state
+        
+        while time.time() < deadline:
+            st = self._get_state()
+            last_state = st
+            if st.get("stable", True):
+                return st
+            time.sleep(poll)
+        
         return last_state
 
     @staticmethod
