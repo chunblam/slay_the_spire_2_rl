@@ -6,7 +6,7 @@ device: "auto"   # "cpu" | "cuda" | "auto"
 # ── 环境 ──────────────────────────────────────────────────────────────────────
 env:
   host: "127.0.0.1"
-  port: 18080
+  port: 15526               # STS2MCP Raw API 默认端口（/api/v1/singleplayer 或 /api/v1/multiplayer）
   character_index: 0          # 自动开局时角色索引（0-based）
   startup_debug: false        # 仅排障时打开，常态训练建议关闭
   action_poll_interval: 0.8   # 轮询退避间隔（用于 reset/retry）；更大更平滑

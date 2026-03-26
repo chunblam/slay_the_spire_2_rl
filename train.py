@@ -138,10 +138,10 @@ def _extract_agent_card_index(executed_action: Dict, screen_type: str) -> Option
         return None
 
     raw = executed_action.get("action", "")
-    if raw == "skip_reward_cards":
+    if raw == "skip_card_reward":
         return -1
-    if raw == "choose_reward_card":
-        return int(executed_action.get("option_index", 0))
+    if raw == "select_card_reward":
+        return int(executed_action.get("card_index", 0))
 
     if executed_action.get("type") == "choose_reward":
         payload = executed_action.get("payload", {})
@@ -193,15 +193,15 @@ def _get_relic_options_from_state(state: Dict) -> list:
 
 def _extract_agent_relic_index(executed_action: Dict) -> Optional[int]:
     action = str(executed_action.get("action", ""))
-    if action == "choose_treasure_relic":
-        return int(executed_action.get("option_index", 0))
+    if action in ("claim_treasure_relic", "select_relic"):
+        return int(executed_action.get("index", executed_action.get("option_index", 0)))
     return None
 
 
 def _extract_agent_map_index(executed_action: Dict) -> Optional[int]:
     action = str(executed_action.get("action", ""))
     if action == "choose_map_node":
-        return int(executed_action.get("option_index", 0))
+        return int(executed_action.get("index", executed_action.get("option_index", 0)))
     return None
 
 
@@ -294,7 +294,7 @@ def train(cfg: Dict):
 
     env = STS2Env(
         host=cfg["env"].get("host", "localhost"),
-        port=cfg["env"].get("port", 18080),
+        port=cfg["env"].get("port", 15526),
         character_index=cfg["env"].get("character_index", 0),
         startup_debug=cfg["env"].get("startup_debug", False),
         action_poll_interval=cfg["env"].get("action_poll_interval", 0.5),

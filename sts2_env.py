@@ -1,13 +1,3 @@
-"""
-src/env/sts2_env.py
-
-STS2 Gymnasium-compatible Environment
-仅使用 STS2AIAgent Session API：
-- GET  /api/v1/session/state
-- GET  /api/v1/session/legal_actions
-- POST /api/v1/session/action
-"""
-
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -24,7 +14,7 @@ class STS2Env(gym.Env):
     def __init__(
         self,
         host: str = "127.0.0.1",
-        port: int = 18080,
+        port: int = 15526,
         max_hand_size: int = 10,
         max_potions: int = 5,
         render_mode: Optional[str] = None,
@@ -35,6 +25,7 @@ class STS2Env(gym.Env):
         action_min_interval: float = 0.5,
         post_action_settle: float = 0.5,
         action_retry_count: int = 1,
+        game_mode: str = "singleplayer",
     ):
         super().__init__()
         self.base_url = f"http://{host}:{port}"
@@ -48,10 +39,8 @@ class STS2Env(gym.Env):
         self.action_retry_count = max(0, int(action_retry_count))
         self._last_action_at = 0.0
 
-        self._session_state_path = "/api/v1/session/state"
-        self._session_actions_path = "/api/v1/session/action"
-        self._session_legal_actions_path = "/api/v1/session/legal_actions"
-        self._legacy_state_path = "/state"
+        mode = str(game_mode or "singleplayer").strip().lower()
+        self._endpoint_path = "/api/v1/multiplayer" if mode == "multiplayer" else "/api/v1/singleplayer"
 
         self.encoder = StateEncoder()
         self.action_handler = STS2ActionSpace(
@@ -80,13 +69,19 @@ class STS2Env(gym.Env):
         return obs, info
 
     def step(self, action: int) -> Tuple[Dict, float, bool, bool, Dict]:
-        assert self._current_state is not None, "请先调用 reset()"
+        assert self._current_state is not None, "reset() must be called first"
 
         prev_state = self._get_state()
+        prev_state = self._wait_until_actionable_or_terminal(prev_state, max_wait=20.0)
+        if not self._can_act_now(prev_state) and not self._is_terminal_state(prev_state):
+            raise RuntimeError(
+                "status=blocked can_act=false before action dispatch (state not actionable yet)"
+            )
         self._current_state = prev_state
 
         api_call = self.action_handler.decode(action, prev_state)
         new_state = self._execute_action_with_recovery(api_call)
+        new_state = self._wait_until_actionable_or_terminal(new_state, max_wait=20.0)
         self._current_state = new_state
         self._step_count += 1
 
@@ -101,10 +96,6 @@ class STS2Env(gym.Env):
         return obs, reward, done, truncated, info
 
     def refresh_state(self) -> Tuple[Dict, Dict]:
-        """
-        仅刷新当前状态，不执行动作，不推进训练步数。
-        用于短暂过渡态的容错等待。
-        """
         st = self._get_state()
         self._current_state = st
         return self.encoder.encode(st), self._build_info(st)
@@ -115,11 +106,6 @@ class STS2Env(gym.Env):
         max_wait: float = 180.0,
         poll: Optional[float] = None,
     ) -> Tuple[Dict, float, bool, bool, Dict]:
-        """
-        人工介入步骤：
-        - 等待用户手动操作，直到状态发生变化（或超时）
-        - 将这次变化同样转换为训练样本（reward/done/info）
-        """
         new_state, changed = self._wait_for_manual_state_change(prev_state, max_wait=max_wait, poll=poll)
         self._current_state = new_state
         self._step_count += 1
@@ -130,7 +116,7 @@ class STS2Env(gym.Env):
         info = self._build_info(new_state)
         info["action_executed"] = {"action": "manual_intervention"}
         info["manual_intervention"] = True
-        info["manual_intervention_reason"] = "unknown_state_no_legal_actions"
+        info["manual_intervention_reason"] = "unknown_state_no_available_actions"
         info["manual_intervention_changed"] = changed
         info["manual_state_delta"] = self._build_state_delta(prev_state, new_state)
         truncated = self._step_count >= 1000
@@ -151,245 +137,270 @@ class STS2Env(gym.Env):
             data = payload.get("data")
             return data if isinstance(data, dict) else {}
         if payload.get("status") == "error":
+            if isinstance(payload.get("state"), dict):
+                return payload.get("state")
             raise RuntimeError(str(payload.get("error", payload)))
+        if isinstance(payload.get("state"), dict):
+            return payload.get("state")
         return payload
 
     @staticmethod
-    def _map_screen(raw_state: Dict) -> str:
-        screen = str(raw_state.get("screen", "")).upper()
-        reward = raw_state.get("reward") or {}
-        if screen == "REWARD" and isinstance(reward, dict) and reward.get("pending_card_choice"):
+    def _to_screen_type(state_type: str) -> str:
+        st = str(state_type or "").lower()
+        if st in ("monster", "elite", "boss"):
+            return "COMBAT"
+        if st == "map":
+            return "MAP"
+        if st == "card_reward":
             return "CARD_REWARD"
-        mapping = {
-            "COMBAT": "COMBAT",
-            "MAP": "MAP",
-            "REST": "REST",
-            "SHOP": "SHOP",
-            "EVENT": "EVENT",
-            "CHEST": "CHEST",
-            "CARD_SELECTION": "CARD_SELECT",
-            "CHOOSE_CARD_BUNDLE": "CHOOSE_CARD_BUNDLE",
-            "REWARD": "REWARD",
-            "GAME_OVER": "GAME_OVER",
-            "MAIN_MENU": "NONE",
-            "CHARACTER_SELECT": "OTHER",
-            "MODAL": "OTHER",
-        }
-        return mapping.get(screen, "OTHER")
+        if st == "combat_rewards":
+            return "REWARD"
+        if st == "rest_site":
+            return "REST"
+        if st == "shop":
+            return "SHOP"
+        if st == "event":
+            return "EVENT"
+        if st in ("treasure", "relic_select"):
+            return "CHEST"
+        if st in ("card_select", "hand_select"):
+            return "CARD_SELECT"
+        if st == "card_bundle":
+            return "CHOOSE_CARD_BUNDLE"
+        if st == "main_menu":
+            return "NONE"
+        if st in ("character_select_menu", "menu", "overlay", "unknown"):
+            return "OTHER"
+        return "OTHER"
 
     @staticmethod
-    def _normalize_state(raw_state: Dict, session_state: Optional[Dict], legal_actions: List[str]) -> Dict:
+    def _normalize_state(raw_state: Dict) -> Dict:
         out: Dict[str, Any] = {}
-        out["raw_screen"] = str(raw_state.get("screen", "")).upper()
+        state_type = str(raw_state.get("state_type", "")).lower()
+        available_actions = [str(a) for a in (raw_state.get("available_actions") or [])]
+
         run = raw_state.get("run") or {}
-        combat = raw_state.get("combat") or {}
-        player = combat.get("player") or {}
+        battle = raw_state.get("battle") or {}
+        player = battle.get("player") or {}
 
-        out["screen_type"] = STS2Env._map_screen(raw_state)
-        out["phase"] = (session_state or {}).get("phase", "")
-        out["can_act"] = bool((session_state or {}).get("can_act", False))
-        out["block_reason"] = (session_state or {}).get("block_reason")
-        out["legal_actions"] = legal_actions
+        out["state_type"] = state_type
+        out["raw_screen"] = state_type.upper()
+        out["screen_type"] = STS2Env._to_screen_type(state_type)
+        out["phase"] = "run" if state_type not in ("", "main_menu", "character_select_menu", "menu", "overlay", "unknown") else "menu"
+        out["can_act"] = bool(available_actions)
+        out["block_reason"] = None
+        out["available_actions"] = available_actions
+        out["legal_actions"] = available_actions
 
-        out["floor"] = run.get("floor", 0)
-        out["gold"] = run.get("gold", 0)
-        out["deck"] = run.get("deck", []) if isinstance(run.get("deck"), list) else []
-        out["relics"] = run.get("relics", []) if isinstance(run.get("relics"), list) else []
-        out["potions"] = run.get("potions", []) if isinstance(run.get("potions"), list) else []
+        out["floor"] = int(raw_state.get("floor", run.get("floor", 0)) or 0)
+        out["gold"] = int(raw_state.get("gold", run.get("gold", 0)) or 0)
+        out["deck"] = run.get("deck", raw_state.get("deck", [])) if isinstance(run.get("deck", raw_state.get("deck", [])), list) else []
+        out["relics"] = run.get("relics", raw_state.get("relics", [])) if isinstance(run.get("relics", raw_state.get("relics", [])), list) else []
+        out["potions"] = run.get("potions", raw_state.get("potions", [])) if isinstance(run.get("potions", raw_state.get("potions", [])), list) else []
         out["game_over"] = raw_state.get("game_over") or {}
 
         combat_payload: Dict[str, Any] = {}
-        combat_payload["energy"] = player.get("energy", 0)
+        combat_payload["energy"] = int(player.get("energy", 0) or 0)
+        combat_payload["max_energy"] = int(player.get("max_energy", battle.get("max_energy", 3)) or 3)
+        combat_payload["round"] = int(battle.get("round", 0) or 0)
+        combat_payload["turn"] = str(battle.get("turn", ""))
+        combat_payload["combat_type"] = state_type if state_type in ("monster", "elite", "boss") else ""
         combat_payload["player"] = {
-            "hp": player.get("current_hp", 0),
-            "max_hp": player.get("max_hp", 1),
-            "block": player.get("block", 0),
-            "energy": player.get("energy", 0),
-            "buffs": player.get("powers", []) if isinstance(player.get("powers"), list) else [],
+            "hp": int(player.get("hp", player.get("current_hp", 0)) or 0),
+            "max_hp": int(player.get("max_hp", 1) or 1),
+            "block": int(player.get("block", 0) or 0),
+            "energy": int(player.get("energy", 0) or 0),
+            "buffs": player.get("powers", player.get("buffs", [])) if isinstance(player.get("powers", player.get("buffs", [])), list) else [],
         }
 
+        hand_source = player.get("hand") if isinstance(player.get("hand"), list) else battle.get("hand", [])
         hand_payload = []
-        for idx, card in enumerate(combat.get("hand", []) or []):
+        for idx, card in enumerate(hand_source or []):
             hand_payload.append({
                 "index": idx,
                 "name": card.get("name"),
-                "cost": card.get("energy_cost", 0),
+                "cost": card.get("cost", card.get("energy_cost", 0)),
                 "damage": card.get("damage", 0) or 0,
                 "block": card.get("block", 0) or 0,
-                "type": str(card.get("card_type", "ATTACK")).upper(),
-                "playable": bool(card.get("playable", True)),
+                "type": str(card.get("type", card.get("card_type", "ATTACK"))).upper(),
+                "playable": bool(card.get("playable", card.get("can_play", True))),
                 "requires_target": bool(card.get("requires_target", False)),
             })
         combat_payload["hand"] = hand_payload
 
         monsters_payload = []
-        for idx, enemy in enumerate(combat.get("enemies", []) or []):
-            intents = enemy.get("intents", []) or []
-            first_intent = intents[0] if intents else {}
+        for idx, enemy in enumerate((battle.get("enemies") or [])):
+            intent = enemy.get("intent") or {}
             monsters_payload.append({
                 "index": idx,
                 "name": enemy.get("name"),
-                "hp": enemy.get("current_hp", 0),
-                "max_hp": enemy.get("max_hp", 1),
-                "block": enemy.get("block", 0),
-                "is_alive": enemy.get("is_alive", True),
+                "id": enemy.get("entity_id", enemy.get("id")),
+                "hp": int(enemy.get("hp", enemy.get("current_hp", 0)) or 0),
+                "max_hp": int(enemy.get("max_hp", 1) or 1),
+                "block": int(enemy.get("block", 0) or 0),
+                "is_alive": bool(enemy.get("is_alive", (enemy.get("hp", 0) or 0) > 0)),
                 "intent": {
-                    "type": str(first_intent.get("intent_type", "UNKNOWN")).upper(),
-                    "damage": first_intent.get("damage", 0) or 0,
+                    "type": str(intent.get("type", intent.get("intent_type", "UNKNOWN"))).upper(),
+                    "damage": int(intent.get("damage", 0) or 0),
+                    "times": int(intent.get("times", 1) or 1),
                 },
+                "type": str(enemy.get("type", "")).upper(),
+                "is_elite": bool(enemy.get("is_elite", False)),
+                "is_boss": bool(enemy.get("is_boss", False)),
             })
         combat_payload["monsters"] = monsters_payload
         out["combat"] = combat_payload
 
-        reward = raw_state.get("reward") or {}
-        card_options = reward.get("card_options", []) if isinstance(reward.get("card_options"), list) else []
-        out["card_reward"] = {"cards": card_options}
-        out["reward"] = reward if isinstance(reward, dict) else {}
+        # Reward-like states
+        rewards = raw_state.get("rewards") or {}
+        reward_items = rewards.get("items", []) if isinstance(rewards, dict) else []
+        out["reward"] = {"rewards": reward_items, "can_proceed": bool((rewards or {}).get("can_proceed", False))}
 
+        card_reward = raw_state.get("card_reward") or {}
+        card_reward_cards = card_reward.get("cards", []) if isinstance(card_reward, dict) else []
+        out["card_reward"] = {"cards": card_reward_cards, "can_skip": bool((card_reward or {}).get("can_skip", False))}
+
+        # Map
         map_payload = raw_state.get("map") or {}
         out["map"] = {
-            "next_options": map_payload.get("available_nodes", []) if isinstance(map_payload.get("available_nodes"), list) else [],
-            "nodes": map_payload.get("nodes", []) if isinstance(map_payload.get("nodes"), list) else [],
+            "next_options": map_payload.get("next_options", map_payload.get("available_nodes", [])) if isinstance(map_payload.get("next_options", map_payload.get("available_nodes", [])), list) else [],
+            "nodes": map_payload.get("nodes", []) if isinstance(map_payload.get("nodes", []), list) else [],
         }
 
-        out["rest"] = raw_state.get("rest") or {}
-        out["shop"] = raw_state.get("shop") or {}
+        out["rest"] = raw_state.get("rest_site") or raw_state.get("rest") or {}
+
+        # Shop: normalize item categories for decoder
+        shop = raw_state.get("shop") or {}
+        shop_items = shop.get("items", []) if isinstance(shop.get("items", []), list) else []
+        cards, relics, potions = [], [], []
+        removal = None
+        for i, it in enumerate(shop_items):
+            if not isinstance(it, dict):
+                continue
+            cat = str(it.get("category", "")).lower()
+            idx = int(it.get("index", i) or i)
+            norm = dict(it)
+            norm["index"] = idx
+            if cat == "card":
+                cards.append(norm)
+            elif cat == "relic":
+                relics.append(norm)
+            elif cat == "potion":
+                potions.append(norm)
+            elif cat == "card_removal":
+                removal = norm
+        out["shop"] = {
+            **shop,
+            "cards": cards,
+            "relics": relics,
+            "potions": potions,
+            "card_removal": removal or {},
+        }
+
         out["event"] = raw_state.get("event") or {}
-        out["chest"] = raw_state.get("chest") or {}
-        out["selection"] = raw_state.get("selection") or {}
-        # 事件卡包（Bundle）选择屏 payload：pick_bundle 阶段选左右两包，bundle_preview 阶段确认 proceed
-        card_bundle = raw_state.get("card_bundle") or raw_state.get("cardBundle")
-        if card_bundle is None and isinstance(raw_state.get("agent_view"), dict):
-            agent_view = raw_state.get("agent_view", {}) or {}
-            card_bundle = agent_view.get("card_bundle") or agent_view.get("cardBundle")
-        out["card_bundle"] = card_bundle if isinstance(card_bundle, dict) else {}
+
+        treasure = raw_state.get("treasure") or {}
+        relic_select = raw_state.get("relic_select") or {}
+        chest_relics = []
+        if isinstance(treasure.get("relics"), list):
+            chest_relics = treasure.get("relics")
+        elif isinstance(relic_select.get("relics"), list):
+            chest_relics = relic_select.get("relics")
+        out["chest"] = {
+            "is_opened": bool(chest_relics),
+            "relic_options": chest_relics,
+            "can_proceed": bool(treasure.get("can_proceed", relic_select.get("can_skip", False))),
+        }
+
+        card_select = raw_state.get("card_select") or {}
+        hand_select = raw_state.get("hand_select") or {}
+        select_cards = card_select.get("cards") if isinstance(card_select.get("cards"), list) else hand_select.get("cards", [])
+        out["selection"] = {
+            "cards": select_cards if isinstance(select_cards, list) else [],
+            "prompt": card_select.get("prompt", hand_select.get("prompt", "")),
+            "can_confirm": bool(card_select.get("can_confirm", hand_select.get("can_confirm", False))),
+            "can_cancel": bool(card_select.get("can_cancel", hand_select.get("can_cancel", False))),
+        }
+
+        out["card_bundle"] = raw_state.get("card_bundle") if isinstance(raw_state.get("card_bundle"), dict) else {}
 
         return out
 
-    def _get_session_state(self) -> Dict:
-        resp = requests.get(f"{self.base_url}{self._session_state_path}", timeout=self.timeout)
-        resp.raise_for_status()
-        return self._unwrap_envelope(resp.json())
-
-    def _get_legacy_state(self) -> Dict:
-        resp = requests.get(f"{self.base_url}{self._legacy_state_path}", timeout=self.timeout)
-        resp.raise_for_status()
-        return self._unwrap_envelope(resp.json())
-
     def _get_state(self) -> Dict:
-        session_state = self._get_session_state()
-        legacy_state = self._get_legacy_state()
-        legal_actions = [str(a) for a in session_state.get("legal_actions", []) or []]
-        return self._normalize_state(legacy_state, session_state, legal_actions)
-
-    def _post_session_action(self, body: Dict) -> Dict:
-        if "action" not in body:
-            raise ValueError(f"POST body 缺少 action 字段: {body!r}")
-        self._throttle_action_if_needed()
-        resp = requests.post(f"{self.base_url}{self._session_actions_path}", json=body, timeout=self.timeout)
-        if resp.status_code >= 400:
-            text = resp.text
-            raise RuntimeError(
-                f"session action failed: status={resp.status_code}, body={body}, response={text}"
-            )
+        resp = requests.get(f"{self.base_url}{self._endpoint_path}", timeout=self.timeout)
+        resp.raise_for_status()
         payload = self._unwrap_envelope(resp.json())
-        if isinstance(payload, dict):
-            _ = payload.get("status", "completed")
+        return self._normalize_state(payload)
+
+    def _post_action(self, body: Dict) -> Dict:
+        if "action" not in body:
+            raise ValueError(f"POST body missing 'action': {body!r}")
+        self._throttle_action_if_needed()
+        resp = requests.post(f"{self.base_url}{self._endpoint_path}", json=body, timeout=self.timeout)
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"action failed: status={resp.status_code}, body={body}, response={resp.text}"
+            )
+        payload = resp.json()
+        data = self._unwrap_envelope(payload)
         self._last_action_at = time.time()
         if self.post_action_settle > 0:
             time.sleep(self.post_action_settle)
-        return self._get_state()
+        return self._normalize_state(data)
 
     def _execute_action_with_recovery(self, body: Dict, max_retries: Optional[int] = None) -> Dict:
         max_retries = self.action_retry_count if max_retries is None else max(0, max_retries)
         last_err = ""
         for _ in range(max_retries + 1):
             try:
-                return self._post_session_action(body)
+                return self._post_action(body)
             except Exception as ex:
                 last_err = str(ex)
                 time.sleep(self.action_poll_interval)
-        raise RuntimeError(f"动作执行失败: {body} | {last_err}")
+        raise RuntimeError(f"action failed after retries: {body} | {last_err}")
 
     def _ensure_run_ready(self, timeout_sec: float = 120.0) -> Dict:
         deadline = time.time() + timeout_sec
         while time.time() < deadline:
-            session_state = self._get_session_state()
-            phase = str(session_state.get("phase", "")).lower()
-            legal = [str(a) for a in session_state.get("legal_actions", []) or []]
-            can_act = bool(session_state.get("can_act", False))
+            st = self._get_state()
+            state_type = str(st.get("state_type", "")).lower()
+            legal = [str(a) for a in (st.get("legal_actions") or [])]
+
             if self.startup_debug:
-                print(f"[startup] phase={phase} can_act={can_act} legal={legal}")
+                print(f"[startup] state_type={state_type} legal={legal}")
 
-            if phase == "run":
-                st = self._get_state()
-                if st.get("screen_type") != "GAME_OVER":
-                    self._startup_character_selected = False
-                    return st
-
-            if phase != "character_select":
+            # Already in a playable run-state
+            if state_type in (
+                "monster", "elite", "boss", "map", "event", "shop", "rest_site",
+                "card_reward", "combat_rewards", "card_select", "hand_select",
+                "card_bundle", "treasure", "relic_select",
+            ):
                 self._startup_character_selected = False
+                return st
 
-            if not can_act:
-                time.sleep(self.action_poll_interval)
-                continue
-
-            if "menu_new_run" in legal:
-                if self.startup_debug:
-                    print('[startup] action={"action":"menu_new_run"}')
-                self._post_session_action({"action": "menu_new_run"})
+            # Menu bootstrap to new run
+            if "open_character_select" in legal:
+                self._post_action({"action": "open_character_select"})
                 self._startup_character_selected = False
                 continue
 
-            if "embark" in legal:
-                if self.startup_debug:
-                    print('[startup] action={"action":"embark"}')
-                self._post_session_action({"action": "embark"})
-                continue
-
-            if "menu_confirm" in legal:
-                if self.startup_debug:
-                    print('[startup] action={"action":"menu_confirm"}')
-                self._post_session_action({"action": "menu_confirm"})
-                continue
-
-            if "menu_choose_character" in legal and not self._startup_character_selected:
-                body = {"action": "menu_choose_character", "option_index": self.character_index}
-                if self.startup_debug:
-                    print(f"[startup] action={body}")
-                self._post_session_action(body)
+            if "select_character" in legal and not self._startup_character_selected:
+                self._post_action({"action": "select_character", "index": self.character_index})
                 self._startup_character_selected = True
                 continue
 
-            if "menu_return" in legal:
-                if self.startup_debug:
-                    print('[startup] action={"action":"menu_return"}')
-                self._post_session_action({"action": "menu_return"})
+            if "embark" in legal:
+                self._post_action({"action": "embark"})
+                continue
+
+            if "return_to_main_menu" in legal and state_type != "main_menu":
+                self._post_action({"action": "return_to_main_menu"})
                 self._startup_character_selected = False
-                continue
-
-            if "return_to_main_menu" in legal:
-                if self.startup_debug:
-                    print('[startup] action={"action":"return_to_main_menu"}')
-                self._post_session_action({"action": "return_to_main_menu"})
-                self._startup_character_selected = False
-                continue
-
-            if "confirm_modal" in legal:
-                if self.startup_debug:
-                    print('[startup] action={"action":"confirm_modal"}')
-                self._post_session_action({"action": "confirm_modal"})
-                continue
-
-            if "dismiss_modal" in legal:
-                if self.startup_debug:
-                    print('[startup] action={"action":"dismiss_modal"}')
-                self._post_session_action({"action": "dismiss_modal"})
                 continue
 
             time.sleep(self.action_poll_interval)
 
-        raise TimeoutError("自动开局超时：未能进入 run 阶段。")
+        raise TimeoutError("timed out waiting for run-ready state")
 
     @staticmethod
     def _state_is_actionable(state: Dict) -> bool:
@@ -398,22 +409,6 @@ class STS2Env(gym.Env):
     @staticmethod
     def _can_act_now(state: Dict) -> bool:
         return bool(state.get("can_act", True))
-
-    def _wait_until_actionable(self, max_wait: float = 20.0, poll: Optional[float] = None) -> Dict:
-        poll = self.action_poll_interval if poll is None else max(0.1, poll)
-        start = time.time()
-        last_state = self._current_state or {}
-        while time.time() - start < max_wait:
-            session_state = self._get_session_state()
-            can_act = bool(session_state.get("can_act", False))
-            phase = str(session_state.get("phase", "")).lower()
-            if can_act and phase == "run":
-                st = self._get_state()
-                last_state = st
-                if self._state_is_actionable(st) and self._can_act_now(st):
-                    return st
-            time.sleep(poll)
-        return last_state
 
     def _wait_for_manual_state_change(
         self,
@@ -433,12 +428,32 @@ class STS2Env(gym.Env):
             time.sleep(poll)
         return last_state, False
 
+    def _wait_until_actionable_or_terminal(
+        self,
+        start_state: Dict,
+        max_wait: float = 20.0,
+        poll: Optional[float] = None,
+    ) -> Dict:
+        if self._can_act_now(start_state) or self._is_terminal_state(start_state):
+            return start_state
+
+        poll = self.action_poll_interval if poll is None else max(0.1, poll)
+        deadline = time.time() + max(0.1, max_wait)
+        last_state = start_state
+        while time.time() < deadline:
+            st = self._get_state()
+            last_state = st
+            if self._can_act_now(st) or self._is_terminal_state(st):
+                return st
+            time.sleep(poll)
+        return last_state
+
     @staticmethod
     def _state_signature(state: Dict) -> Tuple:
         combat_player = (state.get("combat") or {}).get("player") or {}
         return (
             state.get("screen_type", ""),
-            state.get("phase", ""),
+            state.get("state_type", ""),
             bool(state.get("can_act", False)),
             tuple(state.get("legal_actions") or []),
             int(state.get("floor", 0) or 0),
@@ -450,12 +465,23 @@ class STS2Env(gym.Env):
         )
 
     @staticmethod
+    def _is_terminal_state(state: Dict) -> bool:
+        screen = str(state.get("screen_type", "")).upper()
+        if screen == "GAME_OVER":
+            return True
+        state_type = str(state.get("state_type", "")).lower()
+        if state_type in ("main_menu", "character_select_menu", "menu"):
+            return True
+        game_over = state.get("game_over") or {}
+        return bool(game_over.get("victory", False) or game_over.get("defeat", False))
+
+    @staticmethod
     def _build_state_delta(prev_state: Dict, new_state: Dict) -> Dict:
         prev_player = (prev_state.get("combat") or {}).get("player") or {}
         new_player = (new_state.get("combat") or {}).get("player") or {}
         return {
             "screen_type": [prev_state.get("screen_type", ""), new_state.get("screen_type", "")],
-            "phase": [prev_state.get("phase", ""), new_state.get("phase", "")],
+            "state_type": [prev_state.get("state_type", ""), new_state.get("state_type", "")],
             "can_act": [bool(prev_state.get("can_act", False)), bool(new_state.get("can_act", False))],
             "legal_actions_count": [len(prev_state.get("legal_actions") or []), len(new_state.get("legal_actions") or [])],
             "floor": [int(prev_state.get("floor", 0) or 0), int(new_state.get("floor", 0) or 0)],
@@ -474,11 +500,9 @@ class STS2Env(gym.Env):
             time.sleep(remain)
 
     def _compute_reward(self, prev_state: Dict, new_state: Dict) -> Tuple[float, bool]:
-        # 严格 v2：训练奖励由 RewardShaper 统一计算，这里仅承担 done 判定职责。
         reward = 0.0
         done = False
 
-        # 只要进入过 GAME_OVER，下一步也视为终局，强制触发 reset。
         if prev_state.get("screen_type") == "GAME_OVER":
             done = True
             return reward, done
@@ -487,11 +511,24 @@ class STS2Env(gym.Env):
             done = True
             return reward, done
 
+        # In STS2MCP, terminal transitions may return to menu states directly.
+        prev_state_type = str(prev_state.get("state_type", "")).lower()
+        new_state_type = str(new_state.get("state_type", "")).lower()
+        if prev_state_type not in ("main_menu", "character_select_menu") and new_state_type in ("main_menu", "character_select_menu"):
+            done = True
+            return reward, done
+
+        game_over = new_state.get("game_over") or {}
+        if bool(game_over.get("victory", False)) or bool(game_over.get("defeat", False)):
+            done = True
+            return reward, done
+
         return reward, done
 
     def _build_info(self, state: Dict) -> Dict:
         return {
             "screen_type": state.get("screen_type", ""),
+            "state_type": state.get("state_type", ""),
             "floor": state.get("floor", 0),
             "hp": state.get("combat", {}).get("player", {}).get("hp", 0),
             "max_hp": state.get("combat", {}).get("player", {}).get("max_hp", 0),
@@ -499,6 +536,7 @@ class STS2Env(gym.Env):
             "deck_size": len(state.get("deck", [])),
             "relics": [r.get("name") for r in state.get("relics", []) if isinstance(r, dict)],
             "legal_actions": state.get("legal_actions", []),
+            "available_actions": state.get("available_actions", []),
             "raw_state": state,
         }
 
@@ -510,4 +548,4 @@ class STS2Env(gym.Env):
         hp = player.get("hp", "?")
         max_hp = player.get("max_hp", "?")
         gold = state.get("gold", 0)
-        print(f"\n[Floor {floor}] Screen: {screen} | HP: {hp}/{max_hp} | Gold: {gold}")
+        print(f"\\n[Floor {floor}] Screen: {screen} | HP: {hp}/{max_hp} | Gold: {gold}")
